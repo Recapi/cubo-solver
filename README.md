@@ -1,7 +1,15 @@
-# Solver de Cubo 3×3
+# Solver de Cubo Mágico (2×2, 3×3 e 4×4)
 
-Página web onde você pinta as cores do seu cubo e recebe a solução em **até 20 movimentos**.
-Servidor e algoritmo em Rust, sem dependências de solver externas.
+Página web onde você pinta as cores do seu cubo e recebe a solução. Servidor e
+algoritmos em Rust, sem dependências de solver externas. Três tamanhos:
+
+- **3×3** — o carro-chefe: soluções ≤ 20 movimentos, modo ótimo com prova,
+  CFOP por etapas, entrada guiada com validação em tempo real;
+- **2×2** — solução **sempre ótima** (tabela de Deus completa: 3.674.160
+  estados, máximo 11 movimentos, instantâneo);
+- **4×4** — resolvido por **redução** (centros → parear arestas → resolver como
+  3×3), com as paridades OLL/PLL corrigidas por algoritmos certificados por
+  simulação; ~110 movimentos e etapas nomeadas no player.
 
 ## Rodar
 
@@ -56,6 +64,29 @@ Para mexer no front-end, edite `static\` e recompile.
 
 Atalhos: **Embaralhar** gera uma posição aleatória; **Aplicar sequência** executa
 uma notação qualquer (`R U R' U2 F2 ...`) sobre o cubo atual.
+
+### 2×2 e 4×4
+
+O seletor no topo troca o tamanho — a planificação e o cubo 3D se reconstroem.
+
+**2×2**: os 8 cantos são os mesmos do 3×3, então a álgebra é reaproveitada. Sem
+centros, o referencial vem do canto de baixo-trás-esquerda (que fica parado
+porque o solver usa só U, R e F). Sobram 7! × 3⁶ = 3.674.160 estados: a tabela
+de Deus completa é gerada por BFS no primeiro uso (< 1 s) e toda solução é
+**ótima** (máximo 11 movimentos — o número de Deus do 2×2, verificado no boot).
+
+**4×4**: modelo próprio de 96 adesivos com 36 movimentos (18 externos + 18
+wide), resolvido por **redução**: (1) centros cor a cor, com tabelas exatas
+C(24,4) por face; (2) pareamento das 24 "asas" em 12 arestas — busca gulosa
+"qualquer par a mais" + busca dirigida com tabelas exatas de 1 e de 2 pares
+(posição + bit de flip relativo, que resolve o clássico fim de jogo das últimas
+duas arestas entrelaçadas); (3) o reduzido vira um 3×3 e cai no solver
+principal. As **paridades** OLL/PLL são detectadas no mapeamento e corrigidas
+por algoritmos clássicos **certificados por simulação** (um candidato só é
+usado se, aplicado, preserva centros e pares e alterna exatamente a paridade
+que promete). As buscas rodam num estado compacto (24 centros + 24 asas com
+bit de ordem, regra verificada contra a planificação real) com a raiz dividida
+entre threads. API: `/api/2/{scramble,apply,solve}` e `/api/4/...`.
 
 ## Como funciona
 
@@ -223,6 +254,8 @@ src/
   tables.rs   tabelas de movimento e de poda (BFS paralelo no boot)
   partial.rs  analise de planificacoes parciais (quais cores podem entrar onde)
   cfop.rs     solver por etapas (cruz, F2L, OLL, PLL) com algoritmos reais
+  cube2.rs    2x2: tabela de Deus completa, solucao sempre otima
+  cube4.rs    4x4: reducao (centros, pareamento, paridades certificadas)
   sym.rs      16 simetrias do eixo U/D + tabelas das fases 1 e 2 (cache)
   xtable.rs   tabela X do modo otimo (3,3 bilhoes de estados, mod 3 em 2 bits)
   search.rs   IDA* das duas fases, multi-thread

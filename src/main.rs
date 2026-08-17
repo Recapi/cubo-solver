@@ -1,6 +1,8 @@
 mod cfop;
 mod coord;
 mod cube;
+mod cube2;
+mod cube4;
 mod facelet;
 mod optimal;
 mod partial;
@@ -408,6 +410,121 @@ async fn api_opt_status(
         st.jobs.lock().unwrap().remove(&id);
     }
     Ok(Json(v))
+}
+
+// ---------------------------------------------------------------------------
+// 2x2 e 4x4
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct SizeReq {
+    #[serde(default)]
+    facelets: Option<String>,
+    #[serde(default)]
+    moves: Option<String>,
+}
+
+async fn api2_scramble(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let t = st.tables;
+    let f = tokio::task::spawn_blocking(move || {
+        let mut rng = Rng::new();
+        cube2::scramble2(&t, move |n| rng.below(n))
+    })
+    .await
+    .unwrap_or_default();
+    Json(serde_json::json!({ "facelets": f }))
+}
+
+async fn api2_apply(
+    State(st): State<AppState>,
+    Json(req): Json<SizeReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let t = st.tables;
+    let f = req.facelets.unwrap_or_default();
+    let moves = parse_moves(&req.moves.unwrap_or_default()).map_err(bad_request)?;
+    let out = cube2::apply2(&f, &moves, &t).map_err(bad_request)?;
+    Ok(Json(serde_json::json!({ "facelets": out })))
+}
+
+async fn api2_solve(
+    State(st): State<AppState>,
+    Json(req): Json<SizeReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let t = st.tables;
+    let f = req.facelets.unwrap_or_default();
+    let res = tokio::task::spawn_blocking(move || {
+        let start = Instant::now();
+        cube2::solve2(&f, &t).map(|s| (s, start.elapsed().as_millis()))
+    })
+    .await
+    .map_err(|e| bad_request(format!("falha interna: {e}")))?;
+    let (s, ms) = res.map_err(bad_request)?;
+    let names = notation(&s.moves);
+    Ok(Json(serde_json::json!({
+        "solution": names,
+        "notation": names.join(" "),
+        "length": s.length,
+        "optimal": true,
+        "states": s.states,
+        "time_ms": ms as u64,
+    })))
+}
+
+async fn api4_scramble(State(_st): State<AppState>) -> Json<serde_json::Value> {
+    let (f, notation) = tokio::task::spawn_blocking(move || {
+        let mut rng = Rng::new();
+        cube4::scramble4(move |n| rng.below(n))
+    })
+    .await
+    .unwrap_or_default();
+    Json(serde_json::json!({ "facelets": f, "notation": notation }))
+}
+
+async fn api4_apply(
+    State(_st): State<AppState>,
+    Json(req): Json<SizeReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let out = cube4::apply4(
+        &req.facelets.unwrap_or_default(),
+        &req.moves.unwrap_or_default(),
+    )
+    .map_err(bad_request)?;
+    Ok(Json(serde_json::json!({ "facelets": out })))
+}
+
+async fn api4_solve(
+    State(st): State<AppState>,
+    Json(req): Json<SizeReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let t = st.tables;
+    let f = req.facelets.unwrap_or_default();
+    let res = tokio::task::spawn_blocking(move || {
+        let start = Instant::now();
+        cube4::solve4(&f, &t).map(|s| (s, start.elapsed().as_millis()))
+    })
+    .await
+    .map_err(|e| bad_request(format!("falha interna: {e}")))?;
+    let (s, ms) = res.map_err(bad_request)?;
+    let mut stage_of = Vec::new();
+    let mut all: Vec<String> = Vec::new();
+    for (si, stg) in s.stages.iter().enumerate() {
+        for tk in &stg.tokens {
+            stage_of.push(si);
+            all.push(tk.clone());
+        }
+    }
+    Ok(Json(serde_json::json!({
+        "stages": s.stages.iter().map(|x| serde_json::json!({
+            "name": x.name, "info": x.info, "moves": x.tokens,
+            "notation": x.tokens.join(" "),
+        })).collect::<Vec<_>>(),
+        "solution": all,
+        "notation": all.join(" "),
+        "stage_of": stage_of,
+        "length": s.length,
+        "states": s.states,
+        "time_ms": ms as u64,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -829,6 +946,12 @@ async fn main() {
         .route("/api/apply", post(api_apply))
         .route("/api/allowed", post(api_allowed))
         .route("/api/cfop", post(api_cfop))
+        .route("/api/2/scramble", post(api2_scramble))
+        .route("/api/2/apply", post(api2_apply))
+        .route("/api/2/solve", post(api2_solve))
+        .route("/api/4/scramble", post(api4_scramble))
+        .route("/api/4/apply", post(api4_apply))
+        .route("/api/4/solve", post(api4_solve))
         .route("/api/optimal/start", post(api_opt_start))
         .route("/api/optimal/status/{id}", get(api_opt_status))
         .route("/api/optimal/cancel/{id}", post(api_opt_cancel))
@@ -1227,6 +1350,136 @@ mod tests {
         if o.optimal {
             assert_eq!(o.lower_bound, o.moves.len());
         }
+    }
+
+    #[test]
+    fn cubo2_otimo_completo() {
+        let tables = Tables::build();
+        // tabela de Deus completa + numero de Deus = 11 sao verificados na
+        // propria geracao (asserts); aqui: solucoes otimas de estados aleatorios
+        let mut rng = Rng::new();
+        let mut max = 0usize;
+        for _ in 0..300 {
+            let f = cube2::scramble2(&tables, |n| rng.below(n));
+            let sol = cube2::solve2(&f, &tables).unwrap();
+            assert!(sol.length <= 11, "2x2 com {} movimentos", sol.length);
+            max = max.max(sol.length);
+            // aplicar a solucao leva ao resolvido
+            let end = cube2::apply2(&f, &sol.moves, &tables).unwrap();
+            let (c, _) = cube2::parse2(&end).unwrap();
+            assert!(c.cp.iter().enumerate().all(|(i, &p)| p as usize == i));
+            assert!(c.co.iter().all(|&o| o == 0));
+        }
+        assert!(max >= 9, "estranho: nenhum caso dificil em 300 sorteios");
+        // erros de entrada
+        assert!(cube2::parse2("UU").is_err());
+        assert!(cube2::parse2(&"U".repeat(24)).is_err());
+    }
+
+    #[test]
+    fn cubo4_movimentos_e_paridades() {
+        // ordens dos movimentos
+        let mv = cube4::moves4();
+        for m in 0..cube4::N_MOVES4 {
+            let mut s = cube4::solved4();
+            let reps = if m % 3 == 1 { 2 } else { 4 };
+            for _ in 0..reps {
+                cube4::apply_move4(&mut s, m);
+            }
+            assert_eq!(s, cube4::solved4(), "movimento {m} nao tem ordem certa");
+        }
+        // notacao ida e volta
+        let seq = cube4::parse_moves4("R Uw2 f' L2 Bw D'").unwrap();
+        assert_eq!(seq.len(), 6);
+        // os algoritmos de paridade certificam (panicam se nenhum candidato servir)
+        let mut s = cube4::solved4();
+        cube4::apply_seq4(&mut s, &cube4::parse_moves4("Rw U2").unwrap());
+        // parse/render ida e volta
+        let solved_str: String = (0..96).map(|i| "URFDLB".chars().nth(i / 16).unwrap()).collect();
+        let (st, letters) = cube4::parse4(&solved_str).unwrap();
+        assert_eq!(cube4::render4(&st, &letters), solved_str);
+        assert!(cube4::parse4("UU").is_err());
+    }
+
+    #[test]
+    fn cubo4_diagnostico() {
+        let tables = Tables::build();
+        // caso trivial 1: resolvido + Uw -> resolver de volta deve ser curto
+        let solved_str: String = (0..96).map(|i| "URFDLB".chars().nth(i / 16).unwrap()).collect();
+        let mexido = cube4::apply4(&solved_str, "Uw").unwrap();
+        let t0 = std::time::Instant::now();
+        let sol = cube4::solve4(&mexido, &tables);
+        match &sol {
+            Ok(s) => println!(
+                "trivial Uw: {} movimentos em {:?} ({} etapas)",
+                s.length,
+                t0.elapsed(),
+                s.stages.len()
+            ),
+            Err(e) => println!("trivial Uw FALHOU: {e}"),
+        }
+        assert!(sol.is_ok());
+
+        // caso trivial 2: só movimentos externos (nada de centros/pares para fazer)
+        let mexido = cube4::apply4(&solved_str, "R U F' L D2 B").unwrap();
+        let t0 = std::time::Instant::now();
+        let sol = cube4::solve4(&mexido, &tables);
+        match &sol {
+            Ok(s) => println!("externos: {} movimentos em {:?}", s.length, t0.elapsed()),
+            Err(e) => println!("externos FALHOU: {e}"),
+        }
+        assert!(sol.is_ok());
+
+        // caso extra: o estado real que travou o fim de jogo do pareamento
+        // (duas ultimas arestas entrelacadas)
+        let travado = "DDDDFUUDFUUDUBBLFLLBLRRRLRRRFBBRRLLDFFFUFFFUUDDULBBLLDDULDDUBDRFBDRFULLUULLUUFFBRRRLBBBRBBBRDFFR";
+        let t0 = std::time::Instant::now();
+        let sol = cube4::solve4(travado, &tables);
+        match &sol {
+            Ok(s) => println!("fim-de-jogo travado: {} movimentos em {:?}", s.length, t0.elapsed()),
+            Err(e) => println!("fim-de-jogo travado FALHOU: {e}"),
+        }
+        assert!(sol.is_ok());
+
+        // caso 3: embaralhado com 6 movimentos mistos
+        let mexido = cube4::apply4(&solved_str, "Rw U Fw' D Lw2 B'").unwrap();
+        let t0 = std::time::Instant::now();
+        let sol = cube4::solve4(&mexido, &tables);
+        match &sol {
+            Ok(s) => {
+                print!("misto-6: {} movimentos em {:?} — etapas:", s.length, t0.elapsed());
+                for st in &s.stages {
+                    print!(" [{} {}]", st.name, st.tokens.len());
+                }
+                println!();
+            }
+            Err(e) => println!("misto-6 FALHOU: {e}"),
+        }
+        assert!(sol.is_ok());
+    }
+
+    #[test]
+    fn cubo4_reducao_resolve() {
+        let tables = Tables::build();
+        let mut rng = Rng::new();
+        let mut total = 0usize;
+        for i in 0..8 {
+            let (f, _) = cube4::scramble4(|n| rng.below(n));
+            let sol = cube4::solve4(&f, &tables).unwrap_or_else(|e| panic!("caso {i}: {e}"));
+            // o ultimo estado precisa ser o resolvido (uniforme por face)
+            let last = sol.states.last().unwrap();
+            let bytes: Vec<char> = last.chars().collect();
+            for face in 0..6 {
+                let c0 = bytes[face * 16];
+                assert!(
+                    (0..16).all(|k| bytes[face * 16 + k] == c0),
+                    "caso {i}: face {face} nao uniforme"
+                );
+            }
+            assert!(sol.length <= 220, "caso {i}: {} movimentos", sol.length);
+            total += sol.length;
+        }
+        println!("4x4: media de {:.1} movimentos", total as f64 / 8.0);
     }
 
     #[test]

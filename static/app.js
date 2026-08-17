@@ -17,6 +17,17 @@
 
   var SOLVED = "UUUUUUUUURRRRRRRRRFFFFFFFFFDDDDDDDDDLLLLLLLLLBBBBBBBBB";
 
+  // tamanho do cubo (2, 3 ou 4); o 3x3 tem todos os recursos
+  var N = 3;
+  function perFace() { return N * N; }
+  function totalStickers() { return 6 * N * N; }
+  function solvedString() {
+    var out = "";
+    FACES.forEach(function (f) { for (var i = 0; i < N * N; i++) out += f; });
+    return out;
+  }
+  function isCenter(i) { return N === 3 && i % 9 === 4; }
+
   // Eixo e sentido da rotacao de camada de cada face (sinal = horario olhando
   // para a face, nas coordenadas 3D do CSS, onde o eixo y aponta para baixo).
   var TURN = {
@@ -52,6 +63,12 @@
 
   /** "R" -> gire um quarto de volta no horario; "R'" -> anti-horario; "R2" -> 180. */
   function moveDesc(name) {
+    if (name.indexOf("w") > 0) {
+      var g = FACE_PT[name[0]];
+      var sufixo = name.slice(-1) === "'" ? "no sentido anti-horário"
+        : name.slice(-1) === "2" ? "meia-volta" : "no sentido horário";
+      return "Gire as DUAS camadas " + g[0] + " (" + g[1] + ") juntas, " + sufixo + ".";
+    }
     var f = FACE_PT[name[0]];
     var base = "Gire a face " + f[0] + " (" + f[1] + ") ";
     if (name.length > 1 && name[1] === "2") return base + "meia-volta — 180°, tanto faz o sentido.";
@@ -85,20 +102,29 @@
 
   function buildNet() {
     var net = $("net");
+    net.innerHTML = "";
+    netCells = [];
+    net.style.gridTemplateColumns = "repeat(" + 4 * N + ", var(--cell))";
+    net.style.gridTemplateRows = "repeat(" + 3 * N + ", var(--cell))";
+    net.style.setProperty("--cell", N === 4 ? "23px" : N === 2 ? "38px" : "30px");
+    var off = { U: [0, N], L: [N, 0], F: [N, N], R: [N, 2 * N], B: [N, 3 * N], D: [2 * N, N] };
     FACES.forEach(function (f, fi) {
-      var pos = NET_POS[f];
-      for (var k = 0; k < 9; k++) {
+      var pos = off[f];
+      for (var k = 0; k < N * N; k++) {
         var d = document.createElement("div");
         d.className = "st";
-        d.style.gridRow = pos[0] + Math.floor(k / 3) + 1;
-        d.style.gridColumn = pos[1] + (k % 3) + 1;
-        d.dataset.i = fi * 9 + k;
-        if (k === 4) d.classList.add("center");
-        netCells[fi * 9 + k] = d;
+        d.style.gridRow = pos[0] + Math.floor(k / N) + 1;
+        d.style.gridColumn = pos[1] + (k % N) + 1;
+        d.dataset.i = fi * N * N + k;
+        if (isCenter(fi * N * N + k)) d.classList.add("center");
+        netCells[fi * N * N + k] = d;
         net.appendChild(d);
       }
     });
+  }
 
+  function bindNetEvents() {
+    var net = $("net");
     net.addEventListener("pointerdown", function (e) {
       var t = e.target.closest(".st");
       if (!t) return;
@@ -106,7 +132,7 @@
       var i = +t.dataset.i;
       if (guided) {
         // no guiado, clicar num adesivo vazio escolhe ele como alvo
-        if (i % 9 !== 4 && FACES.indexOf(state[i]) < 0) setTarget(i);
+        if (!isCenter(i) && FACES.indexOf(state[i]) < 0) setTarget(i);
         return;
       }
       painting = true;
@@ -126,25 +152,42 @@
     });
   }
 
+  var CELL_ROT = {
+    U: "rotateX(90deg)", D: "rotateX(-90deg)", F: "", B: "rotateY(180deg)",
+    R: "rotateY(90deg)", L: "rotateY(-90deg)",
+  };
+
   function buildCube3d() {
     var c = $("cube3d");
+    c.innerHTML = "";
+    cubies = [];
+    cubeCells = [];
+    var cell = 132 / N;
+    var off = (132 - cell) / 2;
+    var half = (N - 1) / 2;
 
-    // 26 cubinhos, cada um com 6 planos (os internos ficam como "plastico")
+    // N^3 - interior cubinhos, cada um com 6 planos (internos = "plastico")
     var byPos = {};
-    for (var x = 0; x < 3; x++) {
-      for (var y = 0; y < 3; y++) {
-        for (var z = 0; z < 3; z++) {
-          if (x === 1 && y === 1 && z === 1) continue;
+    for (var x = 0; x < N; x++) {
+      for (var y = 0; y < N; y++) {
+        for (var z = 0; z < N; z++) {
+          var interior = x > 0 && x < N - 1 && y > 0 && y < N - 1 && z > 0 && z < N - 1;
+          if (interior) continue;
           var el = document.createElement("div");
           el.className = "cubie";
-          var t = "translate3d(" + (x - 1) * 44 + "px," + (y - 1) * 44 + "px," + (z - 1) * 44 + "px)";
+          el.style.left = off + "px";
+          el.style.top = off + "px";
+          el.style.width = cell + "px";
+          el.style.height = cell + "px";
+          var t = "translate3d(" + (x - half) * cell + "px," + (y - half) * cell + "px," + (z - half) * cell + "px)";
           el.dataset.t = t;
           el.style.transform = t;
           var planes = {};
           FACES.forEach(function (p) {
             var s = document.createElement("div");
-            s.className = "stk sp-" + p;
-            s.dataset.base = "stk sp-" + p;
+            s.className = "stk";
+            s.dataset.base = "stk";
+            s.style.transform = CELL_ROT[p] + " translateZ(" + cell / 2 + "px)";
             planes[p] = s;
             el.appendChild(s);
           });
@@ -156,21 +199,23 @@
     }
 
     // Liga cada adesivo da planificacao ao plano 3d correspondente.
-    // (mesma convencao do servidor: linha 0 = de cima, coluna 0 = da esquerda,
-    // olhando de frente para a face)
+    var M = N - 1;
     FACES.forEach(function (f, fi) {
-      for (var k = 0; k < 9; k++) {
-        var r = Math.floor(k / 3), col = k % 3, x, y, z;
+      for (var k = 0; k < N * N; k++) {
+        var r = Math.floor(k / N), col = k % N, x, y, z;
         if (f === "U") { x = col; y = 0; z = r; }
-        else if (f === "D") { x = col; y = 2; z = 2 - r; }
-        else if (f === "F") { x = col; y = r; z = 2; }
-        else if (f === "B") { x = 2 - col; y = r; z = 0; }
-        else if (f === "R") { x = 2; y = r; z = 2 - col; }
+        else if (f === "D") { x = col; y = M; z = M - r; }
+        else if (f === "F") { x = col; y = r; z = M; }
+        else if (f === "B") { x = M - col; y = r; z = 0; }
+        else if (f === "R") { x = M; y = r; z = M - col; }
         else { x = 0; y = r; z = col; } // L
-        cubeCells[fi * 9 + k] = byPos[x + "," + y + "," + z][f];
+        cubeCells[fi * N * N + k] = byPos[x + "," + y + "," + z][f];
       }
     });
+  }
 
+  function bindCameraEvents() {
+    var c = $("cube3d");
     // camera arrastavel; no modo guiado ela tambem vira para a face da vez
     var rx = -24, ry = -34, drag = null, animT = null;
     var scene = $("scene");
@@ -210,12 +255,13 @@
 
   // --------------------------------------------------------------- animacao de camada
   function layerOf(face) {
+    var M = N - 1;
     return cubies.filter(function (cb) {
       if (face === "U") return cb.y === 0;
-      if (face === "D") return cb.y === 2;
-      if (face === "R") return cb.x === 2;
+      if (face === "D") return cb.y === M;
+      if (face === "R") return cb.x === M;
       if (face === "L") return cb.x === 0;
-      if (face === "F") return cb.z === 2;
+      if (face === "F") return cb.z === M;
       return cb.z === 0; // B
     });
   }
@@ -277,15 +323,16 @@
   // --------------------------------------------------------------- desenho
   function cls(ch) { return "c-" + (FACES.indexOf(ch) >= 0 ? ch : "none"); }
 
-  /** Desenha `str` (54 letras) na planificacao e no cubo 3d. */
+  /** Desenha a planificacao e o cubo 3d (qualquer tamanho). */
   function draw(str) {
     var prev = shown;
     shown = str;
-    for (var i = 0; i < 54; i++) {
+    var n = totalStickers();
+    for (var i = 0; i < n; i++) {
       var k = cls(str[i]);
       var cell = netCells[i];
-      cell.className = "st" + (i % 9 === 4 ? " center " : " ") + k;
-      if (prev[i] !== str[i]) {
+      cell.className = "st" + (isCenter(i) ? " center " : " ") + k;
+      if (prev.length === n && prev[i] !== str[i]) {
         cell.classList.add("changed");
         (function (c) { setTimeout(function () { c.classList.remove("changed"); }, 420); })(cell);
       }
@@ -374,6 +421,7 @@
   }
 
   function enterGuided() {
+    if (N !== 3) return;
     stateChanged(); // limpa solucao; a pintura ja feita e mantida
     if (complete()) {
       // cubo ja todo pintado: o guiado e para inserir um novo, comeca limpo
@@ -471,10 +519,11 @@
 
   // --------------------------------------------------------------- acoes
   function doScramble() {
-    api("/api/scramble", { length: 25 })
+    var url = N === 3 ? "/api/scramble" : "/api/" + N + "/scramble";
+    api(url, { length: 25 })
       .then(function (j) {
         state = j.facelets.split("");
-        stateChanged("Embaralhado com: " + j.notation, "");
+        stateChanged(j.notation ? "Embaralhado com: " + j.notation : "Embaralhado.", "");
       })
       .catch(function (e) { say(e.message, "err"); });
   }
@@ -482,6 +531,20 @@
   function doApply() {
     var seq = $("seq").value.trim();
     if (!seq) return;
+    if (N !== 3) {
+      if (!complete()) {
+        say("Pinte o cubo inteiro antes de aplicar uma sequência.", "err");
+        return;
+      }
+      api("/api/" + N + "/apply", { facelets: state.join(""), moves: seq })
+        .then(function (j) {
+          state = j.facelets.split("");
+          stateChanged("Aplicado: " + seq, "ok");
+          $("seq").value = "";
+        })
+        .catch(function (e) { say(e.message, "err"); });
+      return;
+    }
     var body = { moves: seq };
     if (complete()) body.facelets = state.join("");
     api("/api/apply", body)
@@ -491,6 +554,106 @@
         $("seq").value = "";
       })
       .catch(function (e) { say(e.message, "err"); });
+  }
+
+  // ------------------------------------------------------- 2x2 e 4x4
+  function doSolveOther() {
+    var n = missingCount();
+    if (n > 0) {
+      say("Faltam " + n + " adesivo" + (n > 1 ? "s" : "") + " para poder resolver.", "err");
+      return;
+    }
+    var btn = $("btn-solve");
+    btn.disabled = true;
+    btn.textContent = "Resolvendo...";
+    resetSolution();
+    refresh();
+    say("");
+    api("/api/" + N + "/solve", { facelets: state.join("") })
+      .then(function (j) {
+        solution = {
+          solution: j.solution,
+          states: j.states,
+          length: j.length,
+          stageOf: j.stage_of || null,
+          stages: j.stages || null,
+        };
+        if (N === 2) {
+          $("result").innerHTML =
+            "<b>" + j.length + " movimentos</b> &middot; " +
+            "<b class=\"opt-ok\">ÓTIMO — o mínimo possível</b> &middot; " + j.time_ms + " ms";
+          renderChipsSimple(j.solution);
+        } else {
+          renderStagesResult(j, null);
+        }
+        $("player").classList.remove("hidden");
+        $("move-now").classList.remove("hidden");
+        $("p-range").max = j.length;
+        $("p-range").value = 0;
+        say("Solução pronta. Use o player passo a passo.", "ok");
+        jump(0);
+      })
+      .catch(function (e) {
+        resetSolution();
+        refresh();
+        say(e.message, "err");
+      })
+      .finally(function () {
+        btn.disabled = false;
+        btn.textContent = solveLabel();
+      });
+  }
+
+  function renderChipsSimple(names) {
+    var box = $("moves");
+    box.innerHTML = "";
+    names.forEach(function (m, i) {
+      var b = document.createElement("button");
+      b.className = "mv";
+      b.textContent = m;
+      b.addEventListener("click", function () { stopPlay(); jump(i); });
+      box.appendChild(b);
+    });
+  }
+
+  function renderStagesResult(j, holdHtml) {
+    var partes = ["<b>" + j.length + " movimentos</b>"];
+    j.stages.forEach(function (s) {
+      partes.push(s.name.split(" — ")[0].split(" (")[0] + " " + s.moves.length);
+    });
+    partes.push(j.time_ms + " ms");
+    $("result").innerHTML = partes.join(" &middot; ") + (holdHtml || "");
+    var box = $("moves");
+    box.innerHTML = "";
+    var flat = 0;
+    j.stages.forEach(function (s, si) {
+      s.moves.forEach(function (m) {
+        var b = document.createElement("button");
+        b.className = "mv stg-" + (si % 4);
+        b.textContent = m;
+        b.title = s.name + " — movimento " + (flat + 1);
+        (function (i) {
+          b.addEventListener("click", function () { stopPlay(); jump(i); });
+        })(flat);
+        box.appendChild(b);
+        flat++;
+      });
+    });
+  }
+
+  function solveLabel() {
+    return N === 2 ? "Resolver (ótimo)" : N === 4 ? "Resolver por etapas" : "Resolver";
+  }
+
+  function setSize(n) {
+    N = n;
+    document.body.className = "size-" + n;
+    buildNet();
+    buildCube3d();
+    state = solvedString().split("");
+    shown = "";
+    stateChanged("");
+    $("btn-solve").textContent = solveLabel();
   }
 
   // Predefinicoes de busca; mudar o modo preenche os campos avancados.
@@ -597,6 +760,10 @@
   }
 
   function doSolve() {
+    if (N !== 3) {
+      doSolveOther();
+      return;
+    }
     var n = missingCount();
     if (n > 0) {
       say("Faltam " + n + " adesivo" + (n > 1 ? "s" : "") + " para poder resolver.", "err");
@@ -637,7 +804,7 @@
 
   // ------------------------------------------------------------ CFOP
   function doCfop() {
-    if (optJob) return;
+    if (optJob || N !== 3) return;
     var n = missingCount();
     if (n > 0) {
       say("Faltam " + n + " adesivo" + (n > 1 ? "s" : "") + " para poder resolver.", "err");
@@ -792,13 +959,19 @@
     setStep(i);
   }
 
-  /** Avanca um passo girando a camada na tela. */
+  /** Avanca um passo girando a camada na tela (4x4 usa transicao direta,
+   *  porque os movimentos wide giram duas camadas). */
   function stepForward() {
     if (!solution || solution.length === 0) return;
     finishAnim(); // se ja tinha uma girando, aterrissa ela primeiro
     if (step >= solution.length) return;
     var target = step + 1;
-    animateMove(solution.solution[step], function () { setStep(target); });
+    var name = solution.solution[step];
+    if (N === 4 || name.indexOf("w") > 0) {
+      jump(target);
+      return;
+    }
+    animateMove(name, function () { setStep(target); });
   }
 
   function stopPlay() {
@@ -821,7 +994,10 @@
   // --------------------------------------------------------------- init
   buildPalette();
   buildNet();
+  bindNetEvents();
   buildCube3d();
+  bindCameraEvents();
+  document.body.className = "size-3";
   refresh();
 
   $("btn-guided").addEventListener("click", enterGuided);
@@ -831,14 +1007,17 @@
   });
   $("btn-scramble").addEventListener("click", doScramble);
   $("btn-solved").addEventListener("click", function () {
-    state = SOLVED.split("");
+    state = solvedString().split("");
     stateChanged("");
   });
   $("btn-clear").addEventListener("click", function () {
-    state = ".".repeat(54).split("");
-    for (var f = 0; f < 6; f++) state[f * 9 + 4] = FACES[f];
+    state = ".".repeat(totalStickers()).split("");
+    if (N === 3) {
+      for (var f = 0; f < 6; f++) state[f * 9 + 4] = FACES[f];
+    }
     stateChanged();
   });
+  $("size").addEventListener("change", function (e) { setSize(+e.target.value); });
   $("btn-apply").addEventListener("click", doApply);
   $("btn-cfop").addEventListener("click", doCfop);
   $("seq").addEventListener("keydown", function (e) { if (e.key === "Enter") doApply(); });
