@@ -17,6 +17,7 @@ pub struct Tables {
     // Tabelas de poda (distancia minima ate o objetivo da fase)
     pub prun_twist: Vec<u8>, // [slice * N_TWIST + twist]
     pub prun_flip: Vec<u8>,  // [slice * N_FLIP  + flip]
+    pub prun_tf: Vec<u8>,    // [twist * N_FLIP  + flip]
     pub prun_cperm: Vec<u8>, // [cperm * N_SPERM + sperm]
     pub prun_uperm: Vec<u8>, // [uperm * N_SPERM + sperm]
 }
@@ -26,11 +27,8 @@ impl Tables {
     pub fn prun1(&self, twist: u16, flip: u16, slice: u16) -> u8 {
         let a = self.prun_twist[slice as usize * N_TWIST + twist as usize];
         let b = self.prun_flip[slice as usize * N_FLIP + flip as usize];
-        if a > b {
-            a
-        } else {
-            b
-        }
+        let c = self.prun_tf[twist as usize * N_FLIP + flip as usize];
+        a.max(b).max(c)
     }
 
     #[inline(always)]
@@ -65,7 +63,7 @@ impl Tables {
                 )
             });
 
-        let (prun_twist, prun_flip, prun_cperm, prun_uperm) = std::thread::scope(|s| {
+        let (prun_twist, prun_flip, prun_tf, prun_cperm, prun_uperm) = std::thread::scope(|s| {
             let (sm, tm, fm) = (&slice_move, &twist_move, &flip_move);
             let (cm, um, spm) = (&cperm_move, &uperm_move, &sperm_move);
             let a = s.spawn(move || {
@@ -83,6 +81,15 @@ impl Tables {
                     N_FLIP,
                     N_MOVES,
                     |x, m| sm[x * N_MOVES + m] as usize,
+                    |x, m| fm[x * N_MOVES + m] as usize,
+                )
+            });
+            let e = s.spawn(move || {
+                build_prun(
+                    N_TWIST,
+                    N_FLIP,
+                    N_MOVES,
+                    |x, m| tm[x * N_MOVES + m] as usize,
                     |x, m| fm[x * N_MOVES + m] as usize,
                 )
             });
@@ -107,6 +114,7 @@ impl Tables {
             (
                 a.join().unwrap(),
                 b.join().unwrap(),
+                e.join().unwrap(),
                 c.join().unwrap(),
                 d.join().unwrap(),
             )
@@ -122,6 +130,7 @@ impl Tables {
             sperm_move,
             prun_twist,
             prun_flip,
+            prun_tf,
             prun_cperm,
             prun_uperm,
         }

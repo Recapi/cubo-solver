@@ -225,6 +225,25 @@ select {
 .player input[type=range] { flex: 1 1 120px; min-width: 90px; accent-color: var(--accent); }
 .counter { font-family: ui-monospace, Consolas, monospace; font-size: 13px; color: var(--fg-dim); min-width: 58px; text-align: right; }
 
+/* painel avancado */
+.adv {
+  margin: 2px 0 12px; color: var(--fg-dim); font-size: 13px;
+}
+.adv summary { cursor: pointer; }
+.adv summary:hover { color: var(--fg); }
+.adv-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 14px; margin-top: 10px;
+}
+.adv-grid label { display: flex; flex-direction: column; gap: 4px; }
+.adv-grid input {
+  background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line2); border-radius: 7px;
+  padding: 6px 8px; font-size: 13px; font-family: inherit; width: 100%;
+}
+.adv-grid input:focus { outline: none; border-color: var(--accent); }
+.adv-hint { margin: 8px 0 0; font-size: 12px; }
+
 /* guia da notacao para iniciantes */
 .guide {
   margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line);

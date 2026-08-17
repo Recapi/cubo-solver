@@ -346,6 +346,36 @@
       .catch(function (e) { say(e.message, "err"); });
   }
 
+  // Predefinicoes de busca; mudar o modo preenche os campos avancados.
+  var MODES = {
+    fast: { target: 20, max: 20, timeout: 300, min: 0 },
+    balanced: { target: 20, max: 20, timeout: 4000, min: 60 },
+    best: { target: 15, max: 20, timeout: 10000, min: 0 },
+  };
+  var modeMin = MODES.balanced.min;
+
+  function applyMode(name) {
+    var m = MODES[name];
+    if (!m) return;
+    $("opt-target").value = m.target;
+    $("opt-max").value = m.max;
+    $("opt-timeout").value = m.timeout;
+    modeMin = m.min;
+  }
+
+  function solveBody() {
+    var body = {
+      facelets: state.join(""),
+      max_len: Math.max(1, +$("opt-max").value || 20),
+      target_len: Math.max(0, +$("opt-target").value || 0),
+      timeout_ms: Math.max(50, +$("opt-timeout").value || 4000),
+      min_ms: modeMin,
+    };
+    var th = +$("opt-threads").value;
+    if (th > 0) body.threads = th;
+    return body;
+  }
+
   function doSolve() {
     var n = missingCount();
     if (n > 0) {
@@ -359,7 +389,7 @@
     refresh();
     say("");
 
-    api("/api/solve", { facelets: state.join(""), max_len: +$("maxlen").value })
+    api("/api/solve", solveBody())
       .then(function (j) {
         solution = j;
         renderSolution(j);
@@ -385,7 +415,8 @@
       "<b>" + j.length + " movimentos</b> &middot; " +
       j.time_ms + " ms &middot; " +
       j.nodes.toLocaleString("pt-BR") + " nós em " + j.threads + " threads &middot; " +
-      "fase 1: " + j.phase1 + " / fase 2: " + j.phase2;
+      "fase 1: " + j.phase1 + " / fase 2: " + j.phase2 +
+      (j.solutions > 1 ? " &middot; " + j.solutions + " soluções, ficou a melhor" : "");
 
     var box = $("moves");
     box.innerHTML = "";
@@ -487,6 +518,8 @@
   $("btn-apply").addEventListener("click", doApply);
   $("seq").addEventListener("keydown", function (e) { if (e.key === "Enter") doApply(); });
   $("btn-solve").addEventListener("click", doSolve);
+  $("mode").addEventListener("change", function (e) { applyMode(e.target.value); });
+  applyMode($("mode").value);
 
   $("p-first").addEventListener("click", function () { stopPlay(); jump(0); });
   $("p-prev").addEventListener("click", function () { stopPlay(); jump(step - 1); });

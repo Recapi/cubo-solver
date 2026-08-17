@@ -28,7 +28,11 @@ Para mexer no front-end, edite `static\` e recompile.
    Se o seu cubo tem outro esquema de cores, pode repintar os centros também —
    o servidor deduz as faces a partir deles.
 2. **Resolver** — a solução aparece em notação padrão. Os movimentos com sublinhado
-   roxo são os da fase 2.
+   roxo são os da fase 2. Três modos de busca:
+   - **rápido** — primeira solução ≤ 20 (poucos ms);
+   - **equilibrado** (padrão) — 60 ms tentando encurtar (média ~18,7);
+   - **melhor solução** — usa até 10 s procurando encurtar (média ~18,4, máx. 19).
+   Em **Avançado** dá para ajustar alvo, máximo, tempo e threads na mão.
 3. **Passo a passo** — use os controles (ou ←/→ e barra de espaço) para ver o cubo
    a cada movimento, na planificação e no 3D. Arraste o cubo 3D para girar a câmera.
 
@@ -42,7 +46,8 @@ Algoritmo de **duas fases do Kociemba** com busca IDA\*:
 - **Fase 1** leva o cubo para o subgrupo `G1 = <U, D, R2, L2, F2, B2>` — cantos e
   arestas orientados, e as 4 arestas da fatia do meio dentro da fatia.
   Coordenadas: orientação dos cantos (2187) × orientação das arestas (2048) ×
-  posição da fatia (495).
+  posição da fatia (495). A heurística é o máximo de três tabelas:
+  `dist(fatia, cantos)`, `dist(fatia, arestas)` e `dist(cantos, arestas)`.
 - **Fase 2** resolve dentro de `G1`, usando só os 10 movimentos que preservam o
   subgrupo. Coordenadas: permutação dos cantos (40320) × das arestas U/D (40320) ×
   da fatia (24).
@@ -56,16 +61,12 @@ de G1 bem mais fácil, derrubando o total. A busca vai até 21.
 
 ### Paralelismo
 
-Cada thread ataca uma variante diferente da mesma posição:
-
-- **3 eixos** — a fase 1 é definida em relação ao eixo U/D; girando o cubo inteiro,
-  o mesmo algoritmo passa a usar o eixo R/L ou F/B. São três buscas genuinamente
-  diferentes. Foi o que mais ajudou: derrubou o tempo médio de 34 ms para 5 ms.
-- **direta ou invertida** — resolver o cubo inverso e ler a sequência de trás para
-  frente dá outra árvore de busca.
-- **ordem das faces** na DFS.
-
-A melhor solução é compartilhada entre as threads e usada para podar as demais.
+São 6 variantes da mesma posição — **3 eixos** (a fase 1 é definida em relação ao
+eixo U/D; girando o cubo inteiro, o mesmo algoritmo passa a usar R/L ou F/B) ×
+**direta ou invertida** (resolver o cubo inverso e ler a sequência de trás para
+frente dá outra árvore). Threads além das 6 não repetem árvore: **dividem os
+movimentos de raiz** com as da mesma variante. A melhor solução é compartilhada
+entre todas e usada para podar as demais.
 
 ### E a GPU?
 
@@ -77,18 +78,17 @@ que vale aqui é o de poucas threads atacando variantes diferentes da posição.
 
 ## Desempenho
 
-1000 cubos aleatórios (12 threads):
+Cubos aleatórios, 12 threads:
 
-```
-media  : 19,03 movimentos
-maximo : 20 movimentos
-tempo  : ~60 ms por cubo
-```
+| modo | média | máximo | tempo |
+|---|---|---|---|
+| rápido (primeira ≤ 20) | 19,76 | 20 | **1,8 ms** |
+| equilibrado (60 ms encurtando) | **18,73** | 20 | ~60 ms |
+| melhor solução (5 s, alvo 15) | **18,40** | 19 | 5 s |
 
-Os 60 ms são o **esforço mínimo** configurado: a busca acha uma solução de ≤20 em
-poucos milissegundos e usa o resto do tempo tentando encurtar. Sem isso, um cubo a
-3 movimentos do fim receberia uma "solução" de 20 movimentos — a primeira que
-aparece. Se a posição for fácil, a resposta sai curta e imediata.
+O esforço mínimo do modo equilibrado existe para a busca não parar na primeira
+solução: um cubo a 3 movimentos do fim receberia uma "solução" de 20 movimentos —
+a primeira que aparece. Se a posição for fácil, a resposta sai curta e imediata.
 
 ## API
 
@@ -98,10 +98,18 @@ Qualquer conjunto de 6 caracteres distintos serve — as faces são deduzidas do
 
 | Rota | Corpo | Resposta |
 |---|---|---|
-| `POST /api/solve` | `{facelets, max_len?, timeout_ms?}` | `{solution[], notation, length, phase1, phase2, time_ms, nodes, threads, states[]}` |
+| `POST /api/solve` | `{facelets, max_len?, target_len?, timeout_ms?, min_ms?, threads?}` | `{solution[], notation, length, phase1, phase2, time_ms, nodes, solutions, threads, states[]}` |
 | `POST /api/scramble` | `{length?}` | `{facelets, scramble[], notation}` |
 | `POST /api/apply` | `{moves, facelets?}` | `{facelets, moves[]}` |
 | `GET /api/health` | — | `ok` |
+
+Parâmetros do `solve`: `max_len` (1–30, padrão 20) é o tamanho máximo aceitável;
+`target_len` (padrão = `max_len`) faz a busca parar assim que acha algo com até
+esse tamanho — **0 = nunca parar cedo**, usar o tempo todo encurtando;
+`timeout_ms` (50–30000, padrão 4000) limita a busca; `min_ms` (padrão 60) é o
+esforço mínimo antes de aceitar parar no alvo; `threads` (1–12, padrão: núcleos).
+`solutions` na resposta diz quantas soluções completas foram encontradas (cada
+uma melhor que a anterior).
 
 `states` traz a planificação depois de cada movimento (`length + 1` entradas), que é
 o que alimenta o passo a passo da página.
@@ -117,7 +125,10 @@ aresta invertida, paridade inválida, contagem de cores errada, peça repetida.
 .\target\release\cubo-solver.exe --solve "<54 caracteres>"   # resolve e imprime
 ```
 
-`BENCH_TIMEOUT` (ms) e `BENCH_VERBOSE=1` ajustam o benchmark.
+O benchmark aceita `BENCH_TARGET`, `BENCH_MAX`, `BENCH_TIMEOUT` (ms), `BENCH_MIN`
+(ms), `BENCH_THREADS` e `BENCH_VERBOSE=1`. Ex.: `BENCH_MIN=0` mede o tempo até a
+primeira solução ≤ alvo; `BENCH_TARGET=15 BENCH_TIMEOUT=10000` mede o modo
+"melhor solução".
 
 ## Estrutura
 

@@ -64,16 +64,30 @@
       <div class="row solve-row">
         <button id="btn-solve" class="btn primary">Resolver</button>
         <label class="opt">
-          m&aacute;x.
-          <select id="maxlen">
-            <option value="20" selected>20</option>
-            <option value="21">21</option>
-            <option value="22">22</option>
-            <option value="25">25</option>
+          modo
+          <select id="mode">
+            <option value="fast">r&aacute;pido</option>
+            <option value="balanced" selected>equilibrado</option>
+            <option value="best">melhor solu&ccedil;&atilde;o</option>
           </select>
-          movimentos
         </label>
       </div>
+
+      <details class="adv">
+        <summary>Avan&ccedil;ado</summary>
+        <div class="adv-grid">
+          <label>alvo (para ao achar &le;)
+            <input id="opt-target" type="number" min="0" max="30" value="20"></label>
+          <label>m&aacute;ximo de movimentos
+            <input id="opt-max" type="number" min="1" max="30" value="20"></label>
+          <label>tempo de busca (ms)
+            <input id="opt-timeout" type="number" min="50" max="30000" step="50" value="4000"></label>
+          <label>threads
+            <input id="opt-threads" type="number" min="1" max="12" placeholder="auto"></label>
+        </div>
+        <p class="adv-hint">alvo 0 = nunca parar cedo, usar o tempo todo procurando encurtar.
+           Mudar o modo acima preenche estes campos.</p>
+      </details>
 
       <div id="result" class="result"></div>
 

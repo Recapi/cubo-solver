@@ -116,10 +116,21 @@ fn notation(moves: &[u8]) -> Vec<String> {
 #[derive(Deserialize)]
 struct SolveReq {
     facelets: String,
+    /// Tamanho maximo aceitavel (1..=30, padrao 20).
     #[serde(default)]
     max_len: Option<usize>,
+    /// Para ao achar solucao com ate este tamanho; 0 = usar o tempo todo.
+    #[serde(default)]
+    target_len: Option<usize>,
+    /// Tempo maximo de busca em ms (50..=30000, padrao 4000).
     #[serde(default)]
     timeout_ms: Option<u64>,
+    /// Esforco minimo em ms antes de aceitar parar no alvo (padrao 60).
+    #[serde(default)]
+    min_ms: Option<u64>,
+    /// Numero de threads (1..=12, padrao: nucleos da maquina).
+    #[serde(default)]
+    threads: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -131,6 +142,7 @@ struct SolveResp {
     phase2: usize,
     time_ms: u128,
     nodes: usize,
+    solutions: usize,
     threads: usize,
     states: Vec<String>,
 }
@@ -176,11 +188,17 @@ async fn api_solve(
 ) -> Result<Json<SolveResp>, ApiError> {
     let cube = facelet::to_cubie(&req.facelets).map_err(bad_request)?;
     let max_len = req.max_len.unwrap_or(20).clamp(1, 30);
-    let timeout_ms = req.timeout_ms.unwrap_or(4000).clamp(50, 30_000);
+    let params = search::SolveParams {
+        max_len,
+        target_len: req.target_len.unwrap_or(max_len).min(max_len),
+        timeout_ms: req.timeout_ms.unwrap_or(4000).clamp(50, 30_000),
+        min_ms: req.min_ms.unwrap_or(60),
+        threads: req.threads.unwrap_or_else(search::default_threads).clamp(1, 12),
+    };
 
     let res = tokio::task::spawn_blocking(move || {
         let start = Instant::now();
-        let sol = search::solve(&cube, &t, max_len, timeout_ms, search::default_threads());
+        let sol = search::solve(&cube, &t, params);
         sol.map(|s| {
             let elapsed = start.elapsed().as_millis();
             let mut states = Vec::with_capacity(s.moves.len() + 1);
@@ -198,6 +216,7 @@ async fn api_solve(
                 phase2: s.moves.len() - s.phase1,
                 time_ms: elapsed,
                 nodes: s.nodes,
+                solutions: s.solutions,
                 threads: s.threads,
                 solution: names,
                 states,
@@ -259,8 +278,18 @@ async fn page_js() -> impl IntoResponse {
 // Modo CLI (benchmark / solve avulso)
 // ---------------------------------------------------------------------------
 
-fn bench_timeout() -> u64 {
-    std::env::var("BENCH_TIMEOUT").ok().and_then(|v| v.parse().ok()).unwrap_or(4000)
+fn env_num<T: std::str::FromStr>(name: &str, default: T) -> T {
+    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+}
+
+fn bench_params() -> search::SolveParams {
+    search::SolveParams {
+        max_len: env_num("BENCH_MAX", 20),
+        target_len: env_num("BENCH_TARGET", 20),
+        timeout_ms: env_num("BENCH_TIMEOUT", 4000),
+        min_ms: env_num("BENCH_MIN", 60),
+        threads: env_num("BENCH_THREADS", search::default_threads()),
+    }
 }
 
 fn run_bench(t: &Tables, n: usize) {
@@ -270,12 +299,17 @@ fn run_bench(t: &Tables, n: usize) {
     let mut worst = 0usize;
     let mut worst_ms = 0u128;
     let mut hist = [0usize; 31];
-    println!("Resolvendo {n} cubos aleatorios com {} threads...", search::default_threads());
+    let params = bench_params();
+    println!(
+        "Resolvendo {n} cubos aleatorios ({} threads, alvo {}, max {}, {} ms, esforco minimo {} ms)...",
+        params.threads, params.target_len, params.max_len, params.timeout_ms, params.min_ms
+    );
+    let mut total_nodes = 0usize;
     for i in 0..n {
         let scr = random_scramble(&mut rng, 25);
         let cube = apply_moves(&SOLVED, &scr, t);
         let start = Instant::now();
-        let sol = search::solve(&cube, t, 20, bench_timeout(), search::default_threads())
+        let sol = search::solve(&cube, t, params)
             .unwrap_or_else(|e| panic!("falhou no caso {i}: {e}"));
         let ms = start.elapsed().as_millis();
         // verificacao independente
@@ -291,6 +325,7 @@ fn run_bench(t: &Tables, n: usize) {
         }
         total_len += sol.moves.len();
         total_ms += ms;
+        total_nodes += sol.nodes;
         hist[sol.moves.len()] += 1;
         if sol.moves.len() > worst {
             worst = sol.moves.len();
@@ -302,6 +337,7 @@ fn run_bench(t: &Tables, n: usize) {
     println!("media  : {:.2} movimentos", total_len as f64 / n as f64);
     println!("maximo : {worst} movimentos");
     println!("tempo  : {:.1} ms em media, {worst_ms} ms no pior caso", total_ms as f64 / n as f64);
+    println!("nos    : {:.2} M em media", total_nodes as f64 / n as f64 / 1e6);
     print!("distribuicao:");
     for (l, &c) in hist.iter().enumerate() {
         if c > 0 {
@@ -336,7 +372,7 @@ async fn main() {
     if let Some(pos) = args.iter().position(|a| a == "--solve") {
         let input = args.get(pos + 1).map(|s| s.as_str()).unwrap_or("");
         match facelet::to_cubie(input) {
-            Ok(c) => match search::solve(&c, &tables, 20, 1500, search::default_threads()) {
+            Ok(c) => match search::solve(&c, &tables, bench_params()) {
                 Ok(s) => println!("{} ({} movimentos)", notation(&s.moves).join(" "), s.moves.len()),
                 Err(e) => println!("erro: {e}"),
             },
@@ -492,6 +528,14 @@ mod tests {
         }
     }
 
+    fn test_params(timeout_ms: u64) -> search::SolveParams {
+        search::SolveParams {
+            timeout_ms,
+            min_ms: 0,
+            ..search::SolveParams::default()
+        }
+    }
+
     #[test]
     fn resolve_cubos_aleatorios() {
         let tables = Tables::build();
@@ -499,7 +543,7 @@ mod tests {
         for i in 0..30 {
             let scr = random_scramble(&mut rng, 25);
             let cube = apply_moves(&SOLVED, &scr, &tables);
-            let sol = search::solve(&cube, &tables, 20, 2000, search::default_threads())
+            let sol = search::solve(&cube, &tables, test_params(2000))
                 .unwrap_or_else(|e| panic!("caso {i}: {e}"));
             let end = apply_moves(&cube, &sol.moves, &tables);
             assert!(end.is_solved(), "caso {i}: solucao nao resolve");
@@ -517,7 +561,7 @@ mod tests {
         let tables = Tables::build();
         let scr = parse_moves("U R2 F B R B2 R U2 L B2 R U' D' R2 F R' L B2 U2 F2").unwrap();
         let cube = apply_moves(&SOLVED, &scr, &tables);
-        let sol = search::solve(&cube, &tables, 20, 5000, search::default_threads()).unwrap();
+        let sol = search::solve(&cube, &tables, test_params(5000)).unwrap();
         let end = apply_moves(&cube, &sol.moves, &tables);
         assert!(end.is_solved());
         assert!(sol.moves.len() <= 20, "{} movimentos", sol.moves.len());
@@ -526,8 +570,77 @@ mod tests {
     #[test]
     fn cubo_resolvido_da_zero_movimentos() {
         let tables = Tables::build();
-        let sol = search::solve(&SOLVED, &tables, 20, 1000, 4).unwrap();
+        let sol = search::solve(&SOLVED, &tables, test_params(1000)).unwrap();
         assert_eq!(sol.moves.len(), 0);
+    }
+
+    #[test]
+    fn tabela_twist_flip_e_completa() {
+        // Toda combinacao de orientacoes e alcancavel, e a distancia maxima
+        // nesse subespaco e pequena (bem abaixo dos 12 da fase 1 completa).
+        let tables = Tables::build();
+        let max = tables.prun_tf.iter().copied().max().unwrap();
+        assert!(tables.prun_tf.iter().all(|&v| v != 255), "estado inalcancavel");
+        assert!(max <= 12, "distancia maxima {max} inesperada");
+    }
+
+    #[test]
+    fn modo_melhor_solucao_encurta() {
+        // Com alvo baixo a busca continua depois da primeira solucao;
+        // o resultado nunca pode ser pior que o do modo rapido.
+        let tables = Tables::build();
+        let mut rng = Rng::new();
+        for _ in 0..5 {
+            let scr = random_scramble(&mut rng, 25);
+            let cube = apply_moves(&SOLVED, &scr, &tables);
+            let rapido = search::solve(
+                &cube,
+                &tables,
+                search::SolveParams { timeout_ms: 300, min_ms: 0, ..Default::default() },
+            )
+            .unwrap();
+            let melhor = search::solve(
+                &cube,
+                &tables,
+                search::SolveParams {
+                    target_len: 15,
+                    timeout_ms: 1500,
+                    min_ms: 0,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let end = apply_moves(&cube, &melhor.moves, &tables);
+            assert!(end.is_solved());
+            assert!(
+                melhor.moves.len() <= rapido.moves.len(),
+                "melhor ({}) pior que rapido ({})",
+                melhor.moves.len(),
+                rapido.moves.len()
+            );
+        }
+    }
+
+    #[test]
+    fn max_len_e_respeitado() {
+        let tables = Tables::build();
+        let mut rng = Rng::new();
+        let scr = random_scramble(&mut rng, 25);
+        let cube = apply_moves(&SOLVED, &scr, &tables);
+        let sol = search::solve(
+            &cube,
+            &tables,
+            search::SolveParams {
+                max_len: 22,
+                target_len: 22,
+                timeout_ms: 500,
+                min_ms: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert!(sol.moves.len() <= 22);
+        assert!(apply_moves(&cube, &sol.moves, &tables).is_solved());
     }
 }
 

@@ -21,11 +21,40 @@ use crate::tables::Tables;
 const MAX_P1_DEPTH: usize = 21;
 const MAX_P2_DEPTH: usize = 18;
 
+/// Parametros da busca.
+#[derive(Clone, Copy)]
+pub struct SolveParams {
+    /// Tamanho maximo aceitavel; solucoes maiores nem sao consideradas.
+    pub max_len: usize,
+    /// A busca para assim que encontra uma solucao com ate este tamanho
+    /// (respeitado o esforco minimo). 0 = nunca parar cedo, usar o tempo todo.
+    pub target_len: usize,
+    /// Tempo maximo procurando algo melhor depois da primeira solucao.
+    pub timeout_ms: u64,
+    /// Esforco minimo: antes disso nao paramos so por ter batido o alvo.
+    pub min_ms: u64,
+    pub threads: usize,
+}
+
+impl Default for SolveParams {
+    fn default() -> SolveParams {
+        SolveParams {
+            max_len: 20,
+            target_len: 20,
+            timeout_ms: 4000,
+            min_ms: 60,
+            threads: default_threads(),
+        }
+    }
+}
+
 pub struct Solution {
     pub moves: Vec<u8>,
     pub phase1: usize,
     pub nodes: usize,
     pub p1_sols: usize,
+    /// Quantas solucoes completas foram aceitas (cada uma melhor que a anterior).
+    pub solutions: usize,
     pub threads: usize,
 }
 
@@ -35,6 +64,7 @@ struct Shared {
     stop: AtomicBool,
     nodes: AtomicUsize,
     p1_sols: AtomicUsize,
+    sols: AtomicUsize,
     deadline: Instant,
     hard_deadline: Instant,
     /// Antes deste instante nao aceitamos parar so por ter batido o alvo: sem isso
@@ -42,6 +72,7 @@ struct Shared {
     /// que e a primeira que a busca encontra.
     min_until: Instant,
     target: usize,
+    max_len: usize,
 }
 
 struct Searcher<'a> {
@@ -60,6 +91,11 @@ struct Searcher<'a> {
     inverted: bool,
     /// Traducao das faces do referencial girado desta thread para o original.
     face_map: [u8; 6],
+    /// Particao da raiz: esta thread so expande os movimentos iniciais de
+    /// indice i com i % nshares == share. Threads da mesma variante (mesmo
+    /// eixo e mesma direcao) dividem a arvore em vez de repeti-la.
+    share: usize,
+    nshares: usize,
 }
 
 /// Cada thread percorre as faces em uma rotacao diferente.
@@ -97,7 +133,7 @@ impl<'a> Searcher<'a> {
         if self.counter & 0x3FF == 0 {
             let now = Instant::now();
             let best = self.sh.best_len.load(Ordering::Relaxed);
-            let has_solution = best != usize::MAX;
+            let has_solution = best <= self.sh.max_len;
             if now >= self.sh.hard_deadline
                 || (has_solution && now >= self.sh.deadline)
                 || (best <= self.sh.target && now >= self.sh.min_until)
@@ -140,6 +176,9 @@ impl<'a> Searcher<'a> {
             return;
         }
         for i in 0..N_MOVES {
+            if n == 0 && i % self.nshares != self.share {
+                continue; // raiz particionada entre as threads da mesma variante
+            }
             let m = self.order[i];
             let f = move_face(m);
             if n > 0 {
@@ -199,6 +238,7 @@ impl<'a> Searcher<'a> {
                 let mut g = self.sh.best.lock().unwrap();
                 if mv.len() < self.sh.best_len.load(Ordering::Relaxed) {
                     self.sh.best_len.store(mv.len(), Ordering::Relaxed);
+                    self.sh.sols.fetch_add(1, Ordering::Relaxed);
                     *g = Some((mv, phase1));
                 }
                 return;
@@ -293,36 +333,37 @@ pub fn default_threads() -> usize {
         .clamp(1, 12)
 }
 
-/// Resolve o cubo. `max_len` e o alvo (a busca para assim que atinge esse tamanho);
-/// `timeout_ms` limita quanto tempo continuamos procurando algo melhor.
-pub fn solve(
-    cube: &CubieCube,
-    t: &Tables,
-    max_len: usize,
-    timeout_ms: u64,
-    threads: usize,
-) -> Result<Solution, String> {
+/// Resolve o cubo com os parametros dados (ver `SolveParams`).
+pub fn solve(cube: &CubieCube, t: &Tables, p: SolveParams) -> Result<Solution, String> {
     if cube.is_solved() {
         return Ok(Solution {
             moves: Vec::new(),
             phase1: 0,
             nodes: 0,
             p1_sols: 0,
+            solutions: 0,
             threads: 0,
         });
     }
-    let threads = threads.clamp(1, 12);
+    let threads = p.threads.clamp(1, 12);
+    let max_len = p.max_len.clamp(1, 30);
+    let target = p.target_len.min(max_len);
+    let timeout_ms = p.timeout_ms.clamp(50, 30_000);
+    let min_ms = p.min_ms.min(timeout_ms);
     let now = Instant::now();
     let sh = Shared {
         best: Mutex::new(None),
-        best_len: AtomicUsize::new(usize::MAX),
+        // Comecar o limite em max_len + 1 ja restringe a busca a solucoes aceitaveis.
+        best_len: AtomicUsize::new(max_len + 1),
         stop: AtomicBool::new(false),
         nodes: AtomicUsize::new(0),
         p1_sols: AtomicUsize::new(0),
+        sols: AtomicUsize::new(0),
         deadline: now + Duration::from_millis(timeout_ms),
         hard_deadline: now + Duration::from_millis(timeout_ms.max(15_000)),
-        min_until: now + Duration::from_millis(timeout_ms.min(60)),
-        target: max_len,
+        min_until: now + Duration::from_millis(min_ms),
+        target,
+        max_len,
     };
 
     std::thread::scope(|s| {
@@ -332,9 +373,13 @@ pub fn solve(
             // Cada thread ataca uma variante diferente da mesma posicao:
             //   - um dos 3 eixos do cubo (muda qual eixo define o subgrupo G1)
             //   - direta ou invertida (arvore de busca completamente diferente)
-            //   - ordem das faces na DFS
-            let axis = (tid / 2) % 3;
-            let inverted = tid % 2 == 1;
+            // Threads alem das 6 variantes nao repetem a arvore: dividem os
+            // movimentos de raiz com as da mesma variante.
+            let variant = tid % 6;
+            let axis = variant % 3;
+            let inverted = variant >= 3;
+            let share = tid / 6;
+            let nshares = (threads + 5 - variant) / 6;
             let pi = &crate::facelet::ROT_PI[axis];
             let rotated = if axis == 0 {
                 *cube
@@ -344,7 +389,7 @@ pub fn solve(
             let start_cube = if inverted { rotated.inverse() } else { rotated };
             let face_map = crate::facelet::inverse_face_map(pi);
             s.spawn(move || {
-                let (order, order2) = make_orders(tid / 6 + axis);
+                let (order, order2) = make_orders(variant);
                 let mut se = Searcher {
                     t: tables,
                     sh: shr,
@@ -358,6 +403,8 @@ pub fn solve(
                     p1_solutions: 0,
                     inverted,
                     face_map,
+                    share,
+                    nshares,
                 };
                 se.run();
                 shr.nodes.fetch_add(se.counter, Ordering::Relaxed);
@@ -389,6 +436,7 @@ pub fn solve(
         phase1,
         nodes: sh.nodes.load(Ordering::Relaxed),
         p1_sols: sh.p1_sols.load(Ordering::Relaxed),
+        solutions: sh.sols.load(Ordering::Relaxed),
         threads,
     })
 }
