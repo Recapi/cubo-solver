@@ -2,8 +2,12 @@
 
 use crate::coord::*;
 use crate::cube::*;
+use crate::sym::BigP1;
 
 pub struct Tables {
+    /// Tabela grande da fase 1 (distancia exata, ~140 MB), quando habilitada.
+    pub big: Option<BigP1>,
+
     pub mc: [CubieCube; N_MOVES],
 
     // Tabelas de movimento
@@ -25,6 +29,9 @@ pub struct Tables {
 impl Tables {
     #[inline(always)]
     pub fn prun1(&self, twist: u16, flip: u16, slice: u16) -> u8 {
+        if let Some(big) = &self.big {
+            return big.h(twist, flip, slice); // distancia exata
+        }
         let a = self.prun_twist[slice as usize * N_TWIST + twist as usize];
         let b = self.prun_flip[slice as usize * N_FLIP + flip as usize];
         let c = self.prun_tf[twist as usize * N_FLIP + flip as usize];
@@ -121,6 +128,7 @@ impl Tables {
         });
 
         Tables {
+            big: None,
             mc,
             twist_move,
             flip_move,

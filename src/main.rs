@@ -2,6 +2,7 @@
 mod cube;
 mod facelet;
 mod search;
+mod sym;
 mod tables;
 
 use std::sync::Arc;
@@ -353,12 +354,35 @@ fn run_bench(t: &Tables, n: usize) {
 async fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    print!("Gerando tabelas... ");
+    print!("Gerando tabelas basicas... ");
     use std::io::Write;
     let _ = std::io::stdout().flush();
     let t0 = Instant::now();
-    let tables = Arc::new(Tables::build());
+    let mut tables = Tables::build();
     println!("pronto em {} ms", t0.elapsed().as_millis());
+
+    // Tabela grande da fase 1 (distancia exata via simetria, ~140 MB de RAM).
+    // Desligavel com --no-bigtable ou NO_BIGTABLE=1 para maquinas com pouca RAM.
+    let no_big = args.iter().any(|a| a == "--no-bigtable")
+        || std::env::var("NO_BIGTABLE").map(|v| v == "1").unwrap_or(false);
+    if no_big {
+        println!("Tabela de simetria da fase 1 desligada (--no-bigtable).");
+    } else {
+        let cache = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|d| d.join("p1sym.cache")));
+        let cached = cache.as_deref().map(|p| p.exists()).unwrap_or(false);
+        if cached {
+            print!("Carregando tabela de simetria da fase 1 (~140 MB)... ");
+        } else {
+            println!("Gerando tabela de simetria da fase 1 (~140 MB, so na primeira vez):");
+        }
+        let _ = std::io::stdout().flush();
+        let t1 = Instant::now();
+        tables.big = Some(sym::BigP1::load_or_build(&tables, cache.as_deref(), !cached));
+        println!("pronto em {:.1} s", t1.elapsed().as_secs_f64());
+    }
+    let tables = Arc::new(tables);
 
     // --- modos CLI ---
     if let Some(pos) = args.iter().position(|a| a == "--bench") {
@@ -618,6 +642,191 @@ mod tests {
                 melhor.moves.len(),
                 rapido.moves.len()
             );
+        }
+    }
+
+    fn xform_eq(a: &sym::SymXform, b: &sym::SymXform) -> bool {
+        a.perm == b.perm && a.color == b.color
+    }
+
+    #[test]
+    fn simetrias_formam_grupo_de_16() {
+        let syms = sym::symmetries();
+        assert_eq!(syms.len(), 16);
+        // identidade no indice 0
+        assert!(syms[0].perm.iter().enumerate().all(|(i, &p)| i == p));
+        // todas distintas
+        for i in 0..16 {
+            for j in (i + 1)..16 {
+                assert!(!xform_eq(&syms[i], &syms[j]), "simetrias {i} e {j} iguais");
+            }
+        }
+        // fechamento: compor duas quaisquer da outra do conjunto
+        for a in &syms {
+            for b in &syms {
+                let mut perm = [0usize; 54];
+                let mut color = [0usize; 6];
+                for p in 0..54 {
+                    perm[p] = b.perm[a.perm[p]];
+                }
+                for f in 0..6 {
+                    color[f] = b.color[a.color[f]];
+                }
+                let found = syms
+                    .iter()
+                    .any(|s| s.perm == perm && s.color == color);
+                assert!(found, "composicao fora do grupo");
+            }
+        }
+    }
+
+    #[test]
+    fn conjugacao_de_movimentos_bate() {
+        let syms = sym::symmetries();
+        let mc = cube::move_cubes();
+        // indices no vetor de simetrias: y = 4 (i=1), f2 = 2 (j=1), espelho = 1 (k=1)
+        let y = &syms[4];
+        let f2 = &syms[2];
+        let m = &syms[1];
+        // y: F->L, L->B, B->R, R->F, U->U (mesmo sentido)
+        assert_eq!(sym::conj_state(&mc[6], y), mc[12]); // F -> L
+        assert_eq!(sym::conj_state(&mc[12], y), mc[15]); // L -> B
+        assert_eq!(sym::conj_state(&mc[3], y), mc[6]); // R -> F
+        assert_eq!(sym::conj_state(&mc[0], y), mc[0]); // U -> U
+        // f2: U->D, R->L, F->F (mesmo sentido)
+        assert_eq!(sym::conj_state(&mc[0], f2), mc[9]); // U -> D
+        assert_eq!(sym::conj_state(&mc[3], f2), mc[12]); // R -> L
+        assert_eq!(sym::conj_state(&mc[6], f2), mc[6]); // F -> F
+        // espelho: troca o sentido de tudo; R vira L
+        assert_eq!(sym::conj_state(&mc[0], m), mc[2]); // U -> U'
+        assert_eq!(sym::conj_state(&mc[3], m), mc[14]); // R -> L'
+        assert_eq!(sym::conj_state(&mc[6], m), mc[8]); // F -> F'
+    }
+
+    #[test]
+    fn conjugacao_de_arestas_bate_com_planificacao() {
+        let syms = sym::symmetries();
+        let edge_syms: Vec<sym::EdgeCube> = syms.iter().map(sym::edge_cube_of).collect();
+        let edge_invs: Vec<sym::EdgeCube> = edge_syms.iter().map(sym::edge_inverse).collect();
+        let mut rng = Rng::new();
+        for _ in 0..30 {
+            // estado so de arestas: permutacao par + orientacoes com soma par
+            let mut c = SOLVED;
+            for i in (1..12).rev() {
+                let j = rng.below(i as u64 + 1) as usize;
+                c.ep.swap(i, j);
+            }
+            if cube::perm_parity(&c.ep) == 1 {
+                c.ep.swap(0, 1);
+            }
+            let mut soma = 0;
+            for i in 0..11 {
+                c.eo[i] = rng.below(2) as u8;
+                soma += c.eo[i];
+            }
+            c.eo[11] = soma % 2;
+
+            let e = sym::EdgeCube { ep: c.ep, eo: c.eo };
+            for s in 0..16 {
+                let via_facelets = sym::conj_state(&c, &syms[s]);
+                let via_arestas = sym::edge_conj(&e, &edge_syms[s], &edge_invs[s]);
+                assert_eq!(via_facelets.ep, via_arestas.ep, "ep difere na simetria {s}");
+                assert_eq!(via_facelets.eo, via_arestas.eo, "eo difere na simetria {s}");
+            }
+        }
+    }
+
+    #[test]
+    fn coordenada_flip_slice_nao_depende_do_preenchimento() {
+        // O par (slice, flip) conjugado nao pode depender de QUAIS arestas estao
+        // em quais posicoes da fatia, so de ONDE a fatia esta e das orientacoes.
+        let syms = sym::symmetries();
+        let edge_syms: Vec<sym::EdgeCube> = syms.iter().map(sym::edge_cube_of).collect();
+        let edge_invs: Vec<sym::EdgeCube> = edge_syms.iter().map(sym::edge_inverse).collect();
+        let mut rng = Rng::new();
+        for _ in 0..200 {
+            let raw = rng.below(sym::N_RAW as u64) as usize;
+            let c = sym::edges_of_raw(raw);
+            // relabel aleatorio das arestas dentro de cada grupo (fatia / resto)
+            let mut rho: [u8; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+            for i in (1..8).rev() {
+                let j = rng.below(i as u64 + 1) as usize;
+                rho.swap(i, j);
+            }
+            for i in (9..12).rev() {
+                let j = 8 + rng.below((i - 8) as u64 + 1) as usize;
+                rho.swap(i, j);
+            }
+            let mut c2 = c;
+            for i in 0..12 {
+                c2.ep[i] = rho[c.ep[i] as usize];
+            }
+            assert_eq!(sym::raw_of_edges(&c2), raw, "relabel mudou a coordenada");
+            for s in 0..16 {
+                let a = sym::raw_of_edges(&sym::edge_conj(&c, &edge_syms[s], &edge_invs[s]));
+                let b = sym::raw_of_edges(&sym::edge_conj(&c2, &edge_syms[s], &edge_invs[s]));
+                assert_eq!(a, b, "conjugado depende do preenchimento (sim {s}, raw {raw})");
+            }
+        }
+    }
+
+    #[test]
+    fn tabela_grande_e_exata_e_resolve() {
+        let mut tables = Tables::build();
+        let big = sym::BigP1::load_or_build(&tables, None, false);
+
+        // completa e com o maximo conhecido da fase 1
+        assert!(big.dist.iter().all(|&v| v != 255), "estado inalcancavel");
+        let max = big.dist.iter().copied().max().unwrap();
+        assert!(max <= 12, "distancia maxima {max} (esperado <= 12)");
+
+        // resolvido = 0; movimentos de G1 continuam a distancia 0,
+        // os quartos de volta de R/F/L/B ficam a distancia 1
+        assert_eq!(big.h(0, 0, 0), 0);
+        for m in 0..18u8 {
+            let c = SOLVED.multiply(&tables.mc[m as usize]);
+            let h = big.h(get_twist(&c.co), get_flip(&c.eo), get_slice(&c.ep));
+            let esperado = if cube::P2_MOVES.contains(&m) { 0 } else { 1 };
+            assert_eq!(h, esperado, "movimento {m} com distancia errada");
+        }
+
+        // estados dentro de G1 tem distancia 0
+        let mut rng = Rng::new();
+        for _ in 0..20 {
+            let mut c = SOLVED;
+            for _ in 0..15 {
+                let m = cube::P2_MOVES[rng.below(10) as usize];
+                c = c.multiply(&tables.mc[m as usize]);
+            }
+            assert_eq!(big.h(get_twist(&c.co), get_flip(&c.eo), get_slice(&c.ep)), 0);
+        }
+
+        // consistencia (vizinhos diferem em <= 1) e dominancia sobre a heuristica antiga
+        for _ in 0..200 {
+            let scr = random_scramble(&mut rng, 20);
+            let c = apply_moves(&SOLVED, &scr, &tables);
+            let h = big.h(get_twist(&c.co), get_flip(&c.eo), get_slice(&c.ep));
+            let old = tables.prun1(get_twist(&c.co), get_flip(&c.eo), get_slice(&c.ep));
+            assert!(h >= old, "exata ({h}) menor que a heuristica antiga ({old})");
+            for m in 0..18 {
+                let d = c.multiply(&tables.mc[m]);
+                let h2 = big.h(get_twist(&d.co), get_flip(&d.eo), get_slice(&d.ep));
+                assert!(
+                    (h as i32 - h2 as i32).abs() <= 1,
+                    "vizinhos com distancias {h} e {h2}"
+                );
+            }
+        }
+
+        // e resolve cubos com a tabela ligada
+        tables.big = Some(big);
+        for i in 0..8 {
+            let scr = random_scramble(&mut rng, 25);
+            let cube = apply_moves(&SOLVED, &scr, &tables);
+            let sol = search::solve(&cube, &tables, test_params(2000))
+                .unwrap_or_else(|e| panic!("caso {i}: {e}"));
+            assert!(apply_moves(&cube, &sol.moves, &tables).is_solved());
+            assert!(sol.moves.len() <= 20);
         }
     }
 

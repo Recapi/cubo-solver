@@ -46,14 +46,31 @@ Algoritmo de **duas fases do Kociemba** com busca IDA\*:
 - **Fase 1** leva o cubo para o subgrupo `G1 = <U, D, R2, L2, F2, B2>` — cantos e
   arestas orientados, e as 4 arestas da fatia do meio dentro da fatia.
   Coordenadas: orientação dos cantos (2187) × orientação das arestas (2048) ×
-  posição da fatia (495). A heurística é o máximo de três tabelas:
-  `dist(fatia, cantos)`, `dist(fatia, arestas)` e `dist(cantos, arestas)`.
+  posição da fatia (495). A heurística é a **distância exata** dessa fase, lida da
+  tabela de simetria (abaixo); sem ela (`--no-bigtable`), cai para o máximo de
+  três tabelas menores: `dist(fatia, cantos)`, `dist(fatia, arestas)` e
+  `dist(cantos, arestas)`.
 - **Fase 2** resolve dentro de `G1`, usando só os 10 movimentos que preservam o
   subgrupo. Coordenadas: permutação dos cantos (40320) × das arestas U/D (40320) ×
   da fatia (24).
 
-As tabelas de poda (distância exata até o objetivo de cada fase, ~4 MB no total)
-são geradas por BFS no boot, em paralelo — leva ~60 ms.
+As tabelas básicas (~9 MB) são geradas por BFS no boot em ~200 ms.
+
+### Tabela de simetria da fase 1
+
+As 16 simetrias do cubo que preservam o eixo U/D (4 rotações em torno de U ×
+meia-volta em torno de F × espelho esquerda-direita) reduzem o espaço
+flip × fatia de 1.013.760 para **64.430 classes**. Cruzando com a orientação dos
+cantos, uma tabela de 64.430 × 2187 ≈ **140 MB** guarda a distância **exata** da
+fase 1 de qualquer um dos 2,2 bilhões de estados — a heurística deixa de
+subestimar e o IDA\* quase não visita nó fora do caminho (11× menos nós).
+
+Detalhes de implementação: a conjugação de cantos é feita no nível da
+planificação (imune à aritmética de orientação espelhada, fonte clássica de bug)
+e a de arestas por multiplicação direta (mod 2 não sofre com espelho). A geração
+leva ~1,3 s na primeira execução e fica em cache (`p1sym.cache`, ao lado do
+executável); depois carrega em ~0,2 s. `--no-bigtable` ou `NO_BIGTABLE=1`
+desligam a tabela em máquinas com pouca RAM.
 
 Um detalhe que importa muito: **não basta parar a fase 1 em 12 movimentos** (a
 distância máxima até G1). Uma fase 1 mais longa costuma deixar o cubo numa posição
@@ -78,13 +95,13 @@ que vale aqui é o de poucas threads atacando variantes diferentes da posição.
 
 ## Desempenho
 
-Cubos aleatórios, 12 threads:
+Cubos aleatórios, 12 threads, com a tabela de simetria:
 
 | modo | média | máximo | tempo |
 |---|---|---|---|
-| rápido (primeira ≤ 20) | 19,76 | 20 | **1,8 ms** |
-| equilibrado (60 ms encurtando) | **18,73** | 20 | ~60 ms |
-| melhor solução (5 s, alvo 15) | **18,40** | 19 | 5 s |
+| rápido (primeira ≤ 20) | 19,81 | 20 | **0,2 ms** |
+| equilibrado (60 ms encurtando) | **18,48** | 20 | ~60 ms |
+| melhor solução (5 s, alvo 15) | **18,20** | 19 | 5 s |
 
 O esforço mínimo do modo equilibrado existe para a busca não parar na primeira
 solução: um cubo a 3 movimentos do fim receberia uma "solução" de 20 movimentos —
@@ -138,6 +155,7 @@ src/
   coord.rs    conversoes estado <-> coordenadas numericas
   facelet.rs  planificacao <-> estado, validacao, rotacoes do cubo inteiro
   tables.rs   tabelas de movimento e de poda (BFS paralelo no boot)
+  sym.rs      16 simetrias do eixo U/D + tabela grande da fase 1 (140 MB, cache)
   search.rs   IDA* das duas fases, multi-thread
   main.rs     servidor axum, API JSON, modos de linha de comando, testes
 static/       pagina, estilo e script (embutidos no binario)
@@ -152,4 +170,8 @@ $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"; cargo test --release
 Cobrem: ida e volta de todas as coordenadas, os movimentos terem ordem 4, rotações
 do cubo terem ordem 3, planificação ↔ estado, recusa de estados impossíveis,
 resolução de cubos aleatórios em ≤20 movimentos e o **superflip** (a posição que
-exige exatamente 20).
+exige exatamente 20). Para a tabela de simetria: as 16 simetrias formam grupo
+fechado, a conjugação de movimentos bate (espelho leva R em L'), os dois caminhos
+de conjugação (planificação × multiplicação de arestas) coincidem, a contagem de
+classes dá exatamente 64.430, e a tabela é completa, consistente entre vizinhos e
+domina a heurística antiga.
