@@ -470,6 +470,30 @@ async fn api2_solve(
     })))
 }
 
+async fn api2_allowed(
+    State(_st): State<AppState>,
+    Json(req): Json<AllowedReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let cols = cube2::allowed_colors2(&req.facelets, req.pos).map_err(bad_request)?;
+    let letters: Vec<String> =
+        cols.iter().map(|&c| "URFDLB".chars().nth(c).unwrap().to_string()).collect();
+    Ok(Json(serde_json::json!({ "colors": letters })))
+}
+
+async fn api4_allowed(
+    State(_st): State<AppState>,
+    Json(req): Json<AllowedReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let (fac, pos) = (req.facelets.clone(), req.pos);
+    let cols = tokio::task::spawn_blocking(move || cube4::allowed_colors4(&fac, pos))
+        .await
+        .map_err(|e| bad_request(format!("falha interna: {e}")))?
+        .map_err(bad_request)?;
+    let letters: Vec<String> =
+        cols.iter().map(|&c| "URFDLB".chars().nth(c).unwrap().to_string()).collect();
+    Ok(Json(serde_json::json!({ "colors": letters })))
+}
+
 async fn api4_scramble(State(_st): State<AppState>) -> Json<serde_json::Value> {
     let (f, notation) = tokio::task::spawn_blocking(move || {
         let mut rng = Rng::new();
@@ -949,9 +973,11 @@ async fn main() {
         .route("/api/2/scramble", post(api2_scramble))
         .route("/api/2/apply", post(api2_apply))
         .route("/api/2/solve", post(api2_solve))
+        .route("/api/2/allowed", post(api2_allowed))
         .route("/api/4/scramble", post(api4_scramble))
         .route("/api/4/apply", post(api4_apply))
         .route("/api/4/solve", post(api4_solve))
+        .route("/api/4/allowed", post(api4_allowed))
         .route("/api/optimal/start", post(api_opt_start))
         .route("/api/optimal/status/{id}", get(api_opt_status))
         .route("/api/optimal/cancel/{id}", post(api_opt_cancel))
@@ -1456,6 +1482,109 @@ mod tests {
             Err(e) => println!("misto-6 FALHOU: {e}"),
         }
         assert!(sol.is_ok());
+    }
+
+    #[test]
+    fn parcial_2x2_e_4x4_so_permitem_completaveis() {
+        let tables = Tables::build();
+        let mut rng = Rng::new();
+
+        // 2x2: revelar um estado real em ordem aleatoria nunca bloqueia a cor
+        // verdadeira, e no fim o estado e valido
+        for _ in 0..3 {
+            let alvo: Vec<char> = cube2::scramble2(&tables, |n| rng.below(n)).chars().collect();
+            let mut par: Vec<char> = ".".repeat(24).chars().collect();
+            let mut ordem: Vec<usize> = (0..24).collect();
+            for i in (1..24).rev() {
+                let j = rng.below(i as u64 + 1) as usize;
+                ordem.swap(i, j);
+            }
+            for (passo, &pos) in ordem.iter().enumerate() {
+                let s: String = par.iter().collect();
+                let allowed = cube2::allowed_colors2(&s, pos).unwrap();
+                let verdadeira = "URFDLB".chars().position(|c| c == alvo[pos]).unwrap();
+                assert!(
+                    allowed.contains(&verdadeira),
+                    "2x2: cor bloqueada na pos {pos} (passo {passo})"
+                );
+                par[pos] = alvo[pos];
+            }
+            let completo: String = par.iter().collect();
+            assert!(cube2::parse2(&completo).is_ok());
+        }
+
+        // 4x4: idem (96 posicoes; centros indistinguiveis tambem validados)
+        for _ in 0..2 {
+            let (alvo_s, _) = cube4::scramble4(|n| rng.below(n));
+            let alvo: Vec<char> = alvo_s.chars().collect();
+            let mut par: Vec<char> = ".".repeat(96).chars().collect();
+            let mut ordem: Vec<usize> = (0..96).collect();
+            for i in (1..96).rev() {
+                let j = rng.below(i as u64 + 1) as usize;
+                ordem.swap(i, j);
+            }
+            for (passo, &pos) in ordem.iter().enumerate() {
+                let s: String = par.iter().collect();
+                let allowed = cube4::allowed_colors4(&s, pos).unwrap();
+                let verdadeira = "URFDLB".chars().position(|c| c == alvo[pos]).unwrap();
+                assert!(
+                    allowed.contains(&verdadeira),
+                    "4x4: cor bloqueada na pos {pos} (passo {passo})"
+                );
+                par[pos] = alvo[pos];
+            }
+            let completo: String = par.iter().collect();
+            assert!(cube4::parse4(&completo).is_ok());
+        }
+
+        // bloqueios de verdade: 5 adesivos da mesma cor num canto/centro do 4x4
+        let mut par: Vec<char> = ".".repeat(96).chars().collect();
+        // 4 centros U pintados; um 5o centro U tem que ser bloqueado
+        par[0 * 16 + 5] = 'U';
+        par[0 * 16 + 6] = 'U';
+        par[0 * 16 + 9] = 'U';
+        par[0 * 16 + 10] = 'U';
+        let s: String = par.iter().collect();
+        let allowed = cube4::allowed_colors4(&s, 1 * 16 + 5).unwrap();
+        assert!(!allowed.contains(&0), "5o centro U deveria ser bloqueado");
+    }
+
+    #[test]
+    fn cubo4_todas_as_paridades() {
+        // Forca deterministicamente cada cenario de paridade: os proprios
+        // algoritmos certificados criam estados com SO OLL, SO PLL e AMBAS
+        // (mais um embaralhamento externo por cima) - todos precisam fechar.
+        let tables = Tables::build();
+        let solved_str: String = (0..96).map(|i| "URFDLB".chars().nth(i / 16).unwrap()).collect();
+        let cenarios = [
+            ("so OLL", "Rw' U2 Lw F2 Lw' F2 Rw2 U2 Rw U2 Rw' U2 F2 Rw2 F2", ""),
+            ("so PLL", "Rw2 R2 U2 Rw2 R2 Uw2 Rw2 R2 Uw2", ""),
+            (
+                "dupla",
+                "Rw' U2 Lw F2 Lw' F2 Rw2 U2 Rw U2 Rw' U2 F2 Rw2 F2 Rw2 R2 U2 Rw2 R2 Uw2 Rw2 R2 Uw2",
+                "",
+            ),
+            ("so OLL + embaralho", "Rw' U2 Lw F2 Lw' F2 Rw2 U2 Rw U2 Rw' U2 F2 Rw2 F2", "R U F' L D2 B U' R2"),
+            ("dupla + embaralho", "Rw' U2 Lw F2 Lw' F2 Rw2 U2 Rw U2 Rw' U2 F2 Rw2 F2 Rw2 R2 U2 Rw2 R2 Uw2 Rw2 R2 Uw2", "F2 D R' U L2 B'"),
+        ];
+        for (nome, alg, extra) in cenarios {
+            let seq = format!("{alg} {extra}");
+            let estado = cube4::apply4(&solved_str, &seq).unwrap();
+            let sol = cube4::solve4(&estado, &tables)
+                .unwrap_or_else(|e| panic!("paridade '{nome}': {e}"));
+            let last = sol.states.last().unwrap();
+            let bytes: Vec<char> = last.chars().collect();
+            for face in 0..6 {
+                let c0 = bytes[face * 16];
+                assert!(
+                    (0..16).all(|k| bytes[face * 16 + k] == c0),
+                    "paridade '{nome}': nao fechou"
+                );
+            }
+            let usa_oll = sol.stages.iter().any(|s| s.name.contains("OLL parity"));
+            let usa_pll = sol.stages.iter().any(|s| s.name.contains("PLL parity"));
+            println!("paridade '{nome}': {} movimentos (OLL fix: {usa_oll}, PLL fix: {usa_pll})", sol.length);
+        }
     }
 
     #[test]

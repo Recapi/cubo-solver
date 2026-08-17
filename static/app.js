@@ -395,15 +395,19 @@
 
   function guidedPositions() {
     var out = [];
+    var pf = perFace();
     FACE_FILL_ORDER.forEach(function (f) {
       var fi = FACES.indexOf(f);
-      for (var k = 0; k < 9; k++) if (k !== 4) out.push(fi * 9 + k);
+      for (var k = 0; k < pf; k++) {
+        var i = fi * pf + k;
+        if (!isCenter(i)) out.push(i);
+      }
     });
     return out;
   }
 
   function clearTargetMark() {
-    for (var i = 0; i < 54; i++) {
+    for (var i = 0; i < totalStickers(); i++) {
       netCells[i].classList.remove("target");
       cubeCells[i].classList.remove("tgt3");
     }
@@ -421,12 +425,13 @@
   }
 
   function enterGuided() {
-    if (N !== 3) return;
     stateChanged(); // limpa solucao; a pintura ja feita e mantida
     if (complete()) {
       // cubo ja todo pintado: o guiado e para inserir um novo, comeca limpo
-      state = ".".repeat(54).split("");
-      for (var f = 0; f < 6; f++) state[f * 9 + 4] = FACES[f];
+      state = ".".repeat(totalStickers()).split("");
+      if (N === 3) {
+        for (var f = 0; f < 6; f++) state[f * 9 + 4] = FACES[f];
+      }
       refresh();
     }
     guided = { stack: [], target: -1 };
@@ -465,14 +470,17 @@
     var faltam = state.filter(function (c) { return FACES.indexOf(c) < 0; }).length;
     say("Pinte o adesivo destacado — cores impossíveis ficam bloqueadas (faltam " + faltam + ").");
     setPaletteAllowed([]); // trava enquanto consulta o servidor
-    api("/api/allowed", { facelets: partialString(), pos: pos })
+    var url = N === 3 ? "/api/allowed" : "/api/" + N + "/allowed";
+    api(url, { facelets: partialString(), pos: pos })
       .then(function (j) {
         if (!guided || guided.target !== pos) return;
         if (j.colors.length === 0) {
           // pintura previa (feita no modo livre) ja era impossivel
-          say("O que já estava pintado é impossível — recomeçando só com os centros.", "err");
-          state = ".".repeat(54).split("");
-          for (var f = 0; f < 6; f++) state[f * 9 + 4] = FACES[f];
+          say("O que já estava pintado é impossível — recomeçando do zero.", "err");
+          state = ".".repeat(totalStickers()).split("");
+          if (N === 3) {
+            for (var f = 0; f < 6; f++) state[f * 9 + 4] = FACES[f];
+          }
           guided.stack = [];
           refresh();
           nextTarget();

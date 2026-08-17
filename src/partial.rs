@@ -158,7 +158,9 @@ pub fn feasible(f: &[Option<usize>; 54]) -> bool {
 
 /// Quais paridades de permutacao sao alcancaveis por emparelhamentos perfeitos
 /// que respeitam a soma de orientacoes (quando ela esta toda forcada).
-fn achievable(cand: &[Vec<(u8, i8)>], has_free: bool, modb: i32) -> [bool; 2] {
+/// (Tambem usada pelos parciais do 2x2 e 4x4, onde a paridade nao restringe:
+/// basta testar se alguma das duas e alcancavel.)
+pub(crate) fn achievable(cand: &[Vec<(u8, i8)>], has_free: bool, modb: i32) -> [bool; 2] {
     let n = cand.len();
     // encaixes mais restritos primeiro (fail-first)
     let mut order: Vec<usize> = (0..n).collect();

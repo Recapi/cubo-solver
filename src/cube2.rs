@@ -296,6 +296,84 @@ pub fn scramble2(t: &Tables, mut rand: impl FnMut(u64) -> u64) -> String {
     render2(&c, &['U', 'R', 'F', 'D', 'L', 'B'])
 }
 
+// ---------------------------------------------------------------------------
+// Preenchimento parcial (modo guiado): quais cores podem entrar numa posicao?
+// So cantos; no 2x2 qualquer permutacao e alcancavel, entao as restricoes sao
+// o conjunto de pecas (cada uma uma vez) e a soma das orientacoes (mod 3).
+// A validacao usa o esquema padrao de cores (o conjunto de pecas e o mesmo em
+// qualquer orientacao do cubo, entao isso nao restringe nada de verdade).
+// ---------------------------------------------------------------------------
+
+fn feasible2(f: &[Option<usize>; 24]) -> bool {
+    for c in 0..6 {
+        if f.iter().filter(|&&x| x == Some(c)).count() > 4 {
+            return false;
+        }
+    }
+    let mut cand: Vec<Vec<(u8, i8)>> = Vec::with_capacity(8);
+    let mut has_free = false;
+    for slot in 0..8 {
+        let painted = CORNER_FACELET2[slot].iter().any(|&p| f[p].is_some());
+        if !painted {
+            has_free = true;
+        }
+        let mut v = Vec::new();
+        for piece in 0..8 {
+            for o in 0..3usize {
+                let ok = (0..3).all(|k| match f[CORNER_FACELET2[slot][(k + o) % 3]] {
+                    Some(col) => col == CORNER_COLOR2[piece][k],
+                    None => true,
+                });
+                if ok {
+                    if painted {
+                        v.push((piece as u8, o as i8));
+                    } else {
+                        v.push((piece as u8, -1));
+                        break;
+                    }
+                }
+            }
+        }
+        if v.is_empty() {
+            return false;
+        }
+        cand.push(v);
+    }
+    let sc = crate::partial::achievable(&cand, has_free, 3);
+    sc[0] || sc[1] // paridade de permutacao nao restringe o 2x2
+}
+
+/// Cores possiveis (indices 0..6 do esquema padrao) na posicao `pos` de um
+/// preenchimento parcial ('.' = vazio).
+pub fn allowed_colors2(input: &str, pos: usize) -> Result<Vec<usize>, String> {
+    let chars: Vec<char> = input.trim().chars().filter(|c| !c.is_whitespace()).collect();
+    if chars.len() != 24 {
+        return Err(format!("esperava 24 simbolos, recebi {}", chars.len()));
+    }
+    if pos >= 24 {
+        return Err("posicao invalida".into());
+    }
+    let mut f = [None; 24];
+    for (i, &c) in chars.iter().enumerate() {
+        if c == '.' {
+            continue;
+        }
+        match "URFDLB".chars().position(|x| x == c) {
+            Some(k) => f[i] = Some(k),
+            None => return Err(format!("simbolo desconhecido '{c}'")),
+        }
+    }
+    let mut out = Vec::new();
+    for c in 0..6 {
+        let mut g = f;
+        g[pos] = Some(c);
+        if feasible2(&g) {
+            out.push(c);
+        }
+    }
+    Ok(out)
+}
+
 /// Aplica uma sequencia (U R F D L B e variantes) sobre 24 adesivos.
 pub fn apply2(input: &str, moves: &[u8], t: &Tables) -> Result<String, String> {
     let (mut c, scheme) = parse2(input)?;

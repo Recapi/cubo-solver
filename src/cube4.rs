@@ -1370,6 +1370,180 @@ pub fn solve4(input: &str, t: &Tables) -> Result<Solve4, String> {
     Ok(Solve4 { stages, states, length })
 }
 
+// ---------------------------------------------------------------------------
+// Preenchimento parcial (modo guiado do 4x4).
+//
+// Restricoes reais do 4x4 (com centros indistinguiveis, todas as permutacoes
+// sao alcancaveis): conjunto de pecas de canto + soma de orientacoes (mod 3);
+// asas = emparelhamento perfeito peca <-> encaixe respeitando a ORDEM mostrada
+// (deduzida da geometria: a peca w no encaixe q mostra uma ordem determinada);
+// centros = no maximo 4 por cor.
+// ---------------------------------------------------------------------------
+
+/// ord bit: a peca w (asa) no encaixe q mostra as cores em ordem trocada?
+fn wing_ord_table() -> &'static [[u8; 24]; 24] {
+    static T: OnceLock<[[u8; 24]; 24]> = OnceLock::new();
+    T.get_or_init(|| {
+        let r4 = red4();
+        let mut ord = [[255u8; 24]; 24];
+        for w in 0..24 {
+            // BFS da peca a partir de casa (ordem canonica)
+            let mut vis = [false; 24];
+            let mut queue = vec![(w, 0u8)];
+            ord[w][w] = 0;
+            vis[w] = true;
+            while let Some((q, ob)) = queue.pop() {
+                for m in 0..N_MOVES4 {
+                    let q2 = r4.wmove[m][q] as usize;
+                    let ob2 = ob ^ (((r4.wflip[m] >> q) & 1) as u8);
+                    if !vis[q2] {
+                        vis[q2] = true;
+                        ord[w][q2] = ob2;
+                        queue.push((q2, ob2));
+                    } else {
+                        assert_eq!(
+                            ord[w][q2], ob2,
+                            "ordem da asa {w} no encaixe {q2} ambigua"
+                        );
+                    }
+                }
+            }
+            assert!(vis.iter().all(|&v| v), "asa {w} nao alcanca todos os encaixes");
+        }
+        ord
+    })
+}
+
+fn feasible4(f: &[Option<u8>; N_FACELETS4]) -> bool {
+    // contagens
+    for c in 0..6u8 {
+        if f.iter().filter(|&&x| x == Some(c)).count() > 16 {
+            return false;
+        }
+    }
+    let centers = center_facelets4();
+    for c in 0..6u8 {
+        if centers.iter().filter(|&&s| f[s] == Some(c)).count() > 4 {
+            return false;
+        }
+    }
+
+    // cantos: mesmo maquinario do 2x2/3x3 (paridade nao restringe)
+    use crate::facelet::CORNER_COLOR;
+    let cf = corner_facelets4();
+    let mut cand: Vec<Vec<(u8, i8)>> = Vec::with_capacity(8);
+    let mut has_free = false;
+    for slot in 0..8 {
+        let painted = cf[slot].iter().any(|&p| f[p].is_some());
+        if !painted {
+            has_free = true;
+        }
+        let mut v = Vec::new();
+        for piece in 0..8 {
+            for o in 0..3usize {
+                let ok = (0..3).all(|k| match f[cf[slot][(k + o) % 3]] {
+                    Some(col) => col as usize == CORNER_COLOR[piece][k],
+                    None => true,
+                });
+                if ok {
+                    if painted {
+                        v.push((piece as u8, o as i8));
+                    } else {
+                        v.push((piece as u8, -1));
+                        break;
+                    }
+                }
+            }
+        }
+        if v.is_empty() {
+            return false;
+        }
+        cand.push(v);
+    }
+    let sc = crate::partial::achievable(&cand, has_free, 3);
+    if !sc[0] && !sc[1] {
+        return false;
+    }
+
+    // asas: emparelhamento perfeito peca <-> encaixe respeitando a ordem
+    let wf = wing_facelets4();
+    let solved = solved4();
+    let ord = wing_ord_table();
+    let fits = |w: usize, q: usize| -> bool {
+        let t = w / 2;
+        let canon = (solved[wf[2 * t][0]], solved[wf[2 * t][1]]);
+        let shown = if ord[w][q] == 0 { canon } else { (canon.1, canon.0) };
+        let ok0 = match f[wf[q][0]] {
+            Some(col) => col == shown.0,
+            None => true,
+        };
+        let ok1 = match f[wf[q][1]] {
+            Some(col) => col == shown.1,
+            None => true,
+        };
+        ok0 && ok1
+    };
+    // Kuhn: casa cada peca num encaixe
+    let mut match_slot = [usize::MAX; 24]; // encaixe -> peca
+    fn try_kuhn(
+        w: usize,
+        fits: &dyn Fn(usize, usize) -> bool,
+        seen: &mut [bool; 24],
+        match_slot: &mut [usize; 24],
+    ) -> bool {
+        for q in 0..24 {
+            if fits(w, q) && !seen[q] {
+                seen[q] = true;
+                if match_slot[q] == usize::MAX
+                    || try_kuhn(match_slot[q], fits, seen, match_slot)
+                {
+                    match_slot[q] = w;
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    for w in 0..24 {
+        let mut seen = [false; 24];
+        if !try_kuhn(w, &fits, &mut seen, &mut match_slot) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Cores possiveis (indices 0..6 do esquema padrao) na posicao `pos` de um
+/// preenchimento parcial ('.' = vazio).
+pub fn allowed_colors4(input: &str, pos: usize) -> Result<Vec<usize>, String> {
+    let chars: Vec<char> = input.trim().chars().filter(|c| !c.is_whitespace()).collect();
+    if chars.len() != N_FACELETS4 {
+        return Err(format!("esperava 96 simbolos, recebi {}", chars.len()));
+    }
+    if pos >= N_FACELETS4 {
+        return Err("posicao invalida".into());
+    }
+    let mut f = [None; N_FACELETS4];
+    for (i, &c) in chars.iter().enumerate() {
+        if c == '.' {
+            continue;
+        }
+        match "URFDLB".chars().position(|x| x == c) {
+            Some(k) => f[i] = Some(k as u8),
+            None => return Err(format!("simbolo desconhecido '{c}'")),
+        }
+    }
+    let mut out = Vec::new();
+    for c in 0..6u8 {
+        let mut g = f;
+        g[pos] = Some(c);
+        if feasible4(&g) {
+            out.push(c as usize);
+        }
+    }
+    Ok(out)
+}
+
 /// Embaralhamento por movimentos aleatorios.
 pub fn scramble4(mut rand: impl FnMut(u64) -> u64) -> (String, String) {
     let mut state = solved4();

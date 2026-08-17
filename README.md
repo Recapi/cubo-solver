@@ -68,6 +68,10 @@ uma notação qualquer (`R U R' U2 F2 ...`) sobre o cubo atual.
 ### 2×2 e 4×4
 
 O seletor no topo troca o tamanho — a planificação e o cubo 3D se reconstroem.
+O **Preencher guiado** com validação em tempo real funciona nos três tamanhos:
+no 2×2 valida peças de canto e soma de orientações; no 4×4 valida cantos, asas
+(emparelhamento perfeito peça↔encaixe respeitando a ordem mostrada, deduzida da
+geometria) e contagem de centros. Endpoints: /api/2/allowed e /api/4/allowed.
 
 **2×2**: os 8 cantos são os mesmos do 3×3, então a álgebra é reaproveitada. Sem
 centros, o referencial vem do canto de baixo-trás-esquerda (que fica parado
