@@ -1,0 +1,129 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Solver de Cubo 3x3</title>
+<link rel="stylesheet" href="/style.css">
+
+<div class="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="logo" aria-hidden="true"></div>
+      <div>
+        <h1>Solver de Cubo 3&times;3</h1>
+        <p>Algoritmo de duas fases de Kociemba &mdash; solu&ccedil;&otilde;es de at&eacute; 20 movimentos</p>
+      </div>
+    </div>
+    <div class="engine" id="engine">motor Rust</div>
+  </header>
+
+  <main class="grid">
+    <!-- ------------------------------------------------ entrada -->
+    <section class="panel">
+      <div class="panel-head">
+        <span class="step">1</span>
+        <h2>Pinte o seu cubo</h2>
+      </div>
+
+      <p class="hint">
+        Escolha uma cor e clique nos quadradinhos (pode arrastar).
+        Os centros definem a orienta&ccedil;&atilde;o &mdash; segure o cubo com o
+        <b>branco em cima</b> e o <b>verde na frente</b>.
+      </p>
+
+      <div class="palette" id="palette"></div>
+
+      <div class="net-wrap">
+        <div class="net" id="net"></div>
+      </div>
+
+      <div class="row">
+        <button id="btn-scramble" class="btn">Embaralhar</button>
+        <button id="btn-solved" class="btn">Cubo resolvido</button>
+        <button id="btn-clear" class="btn">Limpar</button>
+      </div>
+
+      <div class="row seq-row">
+        <input id="seq" class="input" placeholder="Aplicar sequ&ecirc;ncia: R U R' U2 F2 ..." spellcheck="false">
+        <button id="btn-apply" class="btn">Aplicar</button>
+      </div>
+
+      <div id="status" class="status"></div>
+    </section>
+
+    <!-- ------------------------------------------------ solucao -->
+    <section class="panel">
+      <div class="panel-head">
+        <span class="step">2</span>
+        <h2>Resolva</h2>
+      </div>
+
+      <div class="scene" id="scene">
+        <div class="cube3d" id="cube3d"></div>
+      </div>
+      <p class="hint center">Arraste o cubo para girar a c&acirc;mera</p>
+
+      <div class="row solve-row">
+        <button id="btn-solve" class="btn primary">Resolver</button>
+        <label class="opt">
+          m&aacute;x.
+          <select id="maxlen">
+            <option value="20" selected>20</option>
+            <option value="21">21</option>
+            <option value="22">22</option>
+            <option value="25">25</option>
+          </select>
+          movimentos
+        </label>
+      </div>
+
+      <div id="result" class="result"></div>
+
+      <div id="move-now" class="move-now hidden">
+        <span class="mn-chip" id="mn-chip"></span>
+        <div>
+          <div class="mn-title" id="mn-title"></div>
+          <div class="mn-text" id="mn-text"></div>
+        </div>
+      </div>
+
+      <div id="moves" class="moves"></div>
+
+      <div id="player" class="player hidden">
+        <button class="btn icon" id="p-first" title="In&iacute;cio">&#9198;</button>
+        <button class="btn icon" id="p-prev" title="Anterior">&#9664;</button>
+        <button class="btn play primary" id="p-play" title="Reproduzir">&#9654; tocar</button>
+        <button class="btn icon" id="p-next" title="Pr&oacute;ximo">&#9654;</button>
+        <button class="btn icon" id="p-last" title="Fim">&#9197;</button>
+        <input type="range" id="p-range" min="0" max="0" value="0">
+        <span class="counter" id="p-counter">0 / 0</span>
+      </div>
+
+      <details class="guide">
+        <summary>O que significa R, U', F2&hellip;?</summary>
+        <p>Cada letra &eacute; uma face do cubo (as letras v&ecirc;m do ingl&ecirc;s:
+           <i>Up, Right, Front, Down, Left, Back</i>). Segurando o cubo com o branco
+           em cima e o verde na frente:</p>
+        <ul class="guide-faces">
+          <li><span class="chip c-U"></span><b>U</b> &mdash; cima (branca)</li>
+          <li><span class="chip c-D"></span><b>D</b> &mdash; baixo (amarela)</li>
+          <li><span class="chip c-F"></span><b>F</b> &mdash; frente (verde)</li>
+          <li><span class="chip c-B"></span><b>B</b> &mdash; tr&aacute;s (azul)</li>
+          <li><span class="chip c-R"></span><b>R</b> &mdash; direita (vermelha)</li>
+          <li><span class="chip c-L"></span><b>L</b> &mdash; esquerda (laranja)</li>
+        </ul>
+        <p><b>R</b> = gire essa face um quarto de volta no <b>sentido hor&aacute;rio</b> &middot;
+           <b>R'</b> = um quarto de volta no <b>sentido anti-hor&aacute;rio</b> &middot;
+           <b>R2</b> = <b>meia-volta</b> (180&deg;, tanto faz o sentido).</p>
+        <p>O sentido &eacute; sempre <b>olhando de frente para a face que gira</b>.
+           N&atilde;o precisa decorar: a camada gira na tela a cada passo, e a
+           instru&ccedil;&atilde;o acima descreve o movimento. Arraste o cubo se a
+           face estiver escondida.</p>
+      </details>
+    </section>
+  </main>
+
+  <footer class="foot">
+    Servidor em Rust &middot; busca IDA* em duas fases &middot; tabelas de poda geradas no boot
+  </footer>
+</div>
+
+<script src="/app.js"></script>

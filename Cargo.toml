@@ -1,0 +1,21 @@
+[package]
+name = "cubo-solver"
+version = "0.1.0"
+edition = "2021"
+description = "Solver de cubo 3x3 (Kociemba two-phase) com servidor web em Rust"
+
+[dependencies]
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+
+# As tabelas sao geradas em runtime; sem otimizacao o startup fica lento demais.
+[profile.dev]
+opt-level = 2
