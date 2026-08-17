@@ -33,7 +33,16 @@ Para mexer no front-end, edite `static\` e recompile.
      botão direito apaga). Os centros definem a orientação: segure o cubo com o
      **branco em cima** e o **verde na frente**. Se o seu cubo tem outro esquema
      de cores, pode repintar os centros — o servidor deduz as faces deles.
-2. **Resolver** — a solução aparece em notação padrão. Os movimentos com sublinhado
+2. **Resolver por etapas (CFOP)** — o método que humanos usam: **cruz → F2L →
+   OLL → PLL**. Escolha a **cor da base** (onde a cruz é feita, embaixo) e a da
+   **frente**; o cubo 3D reorienta para essa pegada e cada movimento vem com o
+   nome da etapa ("Cruz · movimento 2 de 74"). Cruz e pares de F2L são ótimos
+   por etapa (busca com tabelas exatas dos subconjuntos); OLL/PLL usam
+   algoritmos reais de speedcubing (Sune, T-perm, …) escolhidos por simulação,
+   com fallback de 2 olhadas que garante cobertura de todos os 216 OLLs e 288
+   PLLs. Média ~60 movimentos.
+
+3. **Resolver** — a solução aparece em notação padrão. Os movimentos com sublinhado
    roxo são os da fase 2. Quatro modos de busca:
    - **rápido** — primeira solução ≤ 20 (menos de 1 ms);
    - **equilibrado** (padrão) — 60 ms tentando encurtar (média ~18,5);
@@ -42,7 +51,7 @@ Para mexer no front-end, edite `static\` e recompile.
      Pode levar minutos; se o tempo acabar, mostra a melhor solução encontrada e
      até onde a prova chegou ("provado ≥ N").
    Em **Avançado** dá para ajustar alvo, máximo, tempo e threads na mão.
-3. **Passo a passo** — use os controles (ou ←/→ e barra de espaço) para ver o cubo
+4. **Passo a passo** — use os controles (ou ←/→ e barra de espaço) para ver o cubo
    a cada movimento, na planificação e no 3D. Arraste o cubo 3D para girar a câmera.
 
 Atalhos: **Embaralhar** gera uma posição aleatória; **Aplicar sequência** executa
@@ -164,6 +173,7 @@ Qualquer conjunto de 6 caracteres distintos serve — as faces são deduzidas do
 | `POST /api/scramble` | `{length?}` | `{facelets, scramble[], notation}` |
 | `POST /api/apply` | `{moves, facelets?}` | `{facelets, moves[]}` |
 | `POST /api/allowed` | `{facelets (parcial, '.' = vazio), pos}` | `{colors[]}` — cores que mantêm o cubo completável |
+| `POST /api/cfop` | `{facelets, base?, front?}` | `{stages[], stage_of[], hold, states[], length}` — solução por etapas |
 | `GET /api/health` | — | `ok` |
 
 Parâmetros do `solve`: `max_len` (1–30, padrão 20) é o tamanho máximo aceitável;
@@ -212,6 +222,7 @@ src/
   facelet.rs  planificacao <-> estado, validacao, rotacoes do cubo inteiro
   tables.rs   tabelas de movimento e de poda (BFS paralelo no boot)
   partial.rs  analise de planificacoes parciais (quais cores podem entrar onde)
+  cfop.rs     solver por etapas (cruz, F2L, OLL, PLL) com algoritmos reais
   sym.rs      16 simetrias do eixo U/D + tabelas das fases 1 e 2 (cache)
   xtable.rs   tabela X do modo otimo (3,3 bilhoes de estados, mod 3 em 2 bits)
   search.rs   IDA* das duas fases, multi-thread

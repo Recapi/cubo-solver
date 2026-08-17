@@ -1,3 +1,4 @@
+mod cfop;
 mod coord;
 mod cube;
 mod facelet;
@@ -410,6 +411,106 @@ async fn api_opt_status(
 }
 
 #[derive(Deserialize)]
+struct CfopReq {
+    facelets: String,
+    /// Letra da cor que vai para BAIXO (a cor da cruz). Padrao: U (branca).
+    #[serde(default)]
+    base: Option<String>,
+    /// Letra da cor que fica na FRENTE. Padrao: F (verde).
+    #[serde(default)]
+    front: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CfopStageResp {
+    name: String,
+    info: String,
+    moves: Vec<String>,
+    notation: String,
+}
+
+#[derive(Serialize)]
+struct CfopResp {
+    stages: Vec<CfopStageResp>,
+    notation: String,
+    length: usize,
+    /// indice da etapa de cada movimento
+    stage_of: Vec<usize>,
+    /// como segurar o cubo
+    hold: String,
+    states: Vec<String>,
+    time_ms: u128,
+}
+
+fn face_letter_of(s: Option<&str>, default: usize) -> Result<usize, String> {
+    match s {
+        None => Ok(default),
+        Some(v) => {
+            let c = v.trim().to_uppercase().chars().next().ok_or("cor vazia")?;
+            "URFDLB"
+                .chars()
+                .position(|x| x == c)
+                .ok_or_else(|| format!("cor desconhecida: {v}"))
+        }
+    }
+}
+
+async fn api_cfop(
+    State(st): State<AppState>,
+    Json(req): Json<CfopReq>,
+) -> Result<Json<CfopResp>, ApiError> {
+    let t = st.tables;
+    let cube = facelet::to_cubie(&req.facelets).map_err(bad_request)?;
+    let base = face_letter_of(req.base.as_deref(), 0).map_err(bad_request)?; // U = branca
+    let front = face_letter_of(req.front.as_deref(), 2).map_err(bad_request)?; // F = verde
+
+    let res = tokio::task::spawn_blocking(move || {
+        let start = Instant::now();
+        cfop::solve_cfop(&cube, &t, base, front).map(|sol| {
+            let mut states = Vec::new();
+            let mut c = facelet::to_cubie(&sol.start_facelets).unwrap();
+            states.push(sol.start_facelets.clone());
+            let mut stage_of = Vec::new();
+            let mut all: Vec<u8> = Vec::new();
+            for (si, s) in sol.stages.iter().enumerate() {
+                for &m in &s.moves {
+                    c = c.multiply(&t.mc[m as usize]);
+                    states.push(facelet::to_facelets(&c));
+                    stage_of.push(si);
+                    all.push(m);
+                }
+            }
+            let cores = ["branca", "vermelha", "verde", "amarela", "laranja", "azul"];
+            CfopResp {
+                stages: sol
+                    .stages
+                    .iter()
+                    .map(|s| CfopStageResp {
+                        name: s.name.clone(),
+                        info: s.info.clone(),
+                        moves: notation(&s.moves),
+                        notation: notation(&s.moves).join(" "),
+                    })
+                    .collect(),
+                notation: notation(&all).join(" "),
+                length: sol.total,
+                stage_of,
+                hold: format!(
+                    "Segure o cubo com a cor {} embaixo e a {} na frente.",
+                    cores[base], cores[front]
+                ),
+                states,
+                time_ms: start.elapsed().as_millis(),
+            }
+        })
+    })
+    .await
+    .map_err(|e| bad_request(format!("falha interna: {e}")))?;
+
+    res.map(Json).map_err(bad_request)
+}
+
+#[derive(Deserialize)]
 struct AllowedReq {
     /// Planificacao parcial: 54 simbolos, '.' = nao pintado.
     facelets: String,
@@ -727,6 +828,7 @@ async fn main() {
         .route("/api/scramble", post(api_scramble))
         .route("/api/apply", post(api_apply))
         .route("/api/allowed", post(api_allowed))
+        .route("/api/cfop", post(api_cfop))
         .route("/api/optimal/start", post(api_opt_start))
         .route("/api/optimal/status/{id}", get(api_opt_status))
         .route("/api/optimal/cancel/{id}", post(api_opt_cancel))
@@ -1125,6 +1227,109 @@ mod tests {
         if o.optimal {
             assert_eq!(o.lower_bound, o.moves.len());
         }
+    }
+
+    #[test]
+    fn cfop_resolve_cubos_aleatorios() {
+        let tables = Tables::build();
+        let mut rng = Rng::new();
+        let mut total = 0usize;
+        let bases = [(0usize, 2usize), (3, 2), (1, 0), (4, 5)]; // varias orientacoes
+        for i in 0..30 {
+            let scr = random_scramble(&mut rng, 25);
+            let cube = apply_moves(&SOLVED, &scr, &tables);
+            let (b, f) = bases[i % bases.len()];
+            let sol = cfop::solve_cfop(&cube, &tables, b, f)
+                .unwrap_or_else(|e| panic!("caso {i}: {e}"));
+            // a solucao resolve o cubo REORIENTADO
+            let mut c = facelet::to_cubie(&sol.start_facelets).unwrap();
+            for s in &sol.stages {
+                c = apply_moves(&c, &s.moves, &tables);
+            }
+            assert!(c.is_solved(), "caso {i}: nao resolveu");
+            assert!(sol.total <= 90, "caso {i}: {} movimentos", sol.total);
+            total += sol.total;
+        }
+        println!("CFOP: media de {:.1} movimentos", total as f64 / 30.0);
+        assert!((total as f64 / 30.0) < 75.0, "media alta demais");
+    }
+
+    #[test]
+    fn cfop_base_e_frente_invalidas_sao_recusadas() {
+        let tables = Tables::build();
+        assert!(cfop::solve_cfop(&SOLVED, &tables, 0, 0).is_err()); // iguais
+        assert!(cfop::solve_cfop(&SOLVED, &tables, 0, 3).is_err()); // opostas
+        assert!(cfop::solve_cfop(&SOLVED, &tables, 0, 2).is_ok());
+    }
+
+    #[test]
+    fn cfop_cobre_todos_os_olls_e_plls() {
+        let tables = Tables::build();
+
+        // Todos os 27 x 8 padroes de orientacao da ultima camada (permutacoes
+        // na identidade): o pipeline inteiro tem que fechar cada um.
+        let mut casos = 0;
+        for co_idx in 0..27u32 {
+            for eo_idx in 0..8u32 {
+                let mut c = SOLVED;
+                let mut s = 0u32;
+                let mut v = co_idx;
+                for i in 0..3 {
+                    c.co[i] = (v % 3) as u8;
+                    s += v % 3;
+                    v /= 3;
+                }
+                c.co[3] = ((3 - s % 3) % 3) as u8;
+                let mut s2 = 0u32;
+                let mut w = eo_idx;
+                for i in 0..3 {
+                    c.eo[i] = (w % 2) as u8;
+                    s2 += w % 2;
+                    w /= 2;
+                }
+                c.eo[3] = ((2 - s2 % 2) % 2) as u8;
+                c.verify().expect("caso de OLL valido");
+                let sol = cfop::solve_cfop(&c, &tables, 3, 2) // base amarela = U vira base? nao: base 3 = D
+                    .unwrap_or_else(|e| panic!("OLL {co_idx}/{eo_idx}: {e}"));
+                let mut r = facelet::to_cubie(&sol.start_facelets).unwrap();
+                for st in &sol.stages {
+                    r = apply_moves(&r, &st.moves, &tables);
+                }
+                assert!(r.is_solved(), "OLL {co_idx}/{eo_idx} nao fechou");
+                casos += 1;
+            }
+        }
+        assert_eq!(casos, 216);
+
+        // Todas as permutacoes da ultima camada com orientacoes zeradas
+        // (paridade de cantos == paridade de arestas): 12 x 24 = 288.
+        let mut casos = 0;
+        let mut cp4 = [0u8; 4];
+        let mut ep4 = [0u8; 4];
+        for ci in 0..24u32 {
+            perm_from_index(ci, 4, &mut cp4);
+            for ei in 0..24u32 {
+                perm_from_index(ei, 4, &mut ep4);
+                if cube::perm_parity(&cp4) != cube::perm_parity(&ep4) {
+                    continue;
+                }
+                let mut c = SOLVED;
+                for i in 0..4 {
+                    c.cp[i] = cp4[i];
+                    c.ep[i] = ep4[i];
+                }
+                c.verify().expect("caso de PLL valido");
+                let sol = cfop::solve_cfop(&c, &tables, 3, 2)
+                    .unwrap_or_else(|e| panic!("PLL {ci}/{ei}: {e}"));
+                let mut r = facelet::to_cubie(&sol.start_facelets).unwrap();
+                for st in &sol.stages {
+                    r = apply_moves(&r, &st.moves, &tables);
+                }
+                assert!(r.is_solved(), "PLL {ci}/{ei} nao fechou");
+                casos += 1;
+            }
+        }
+        assert_eq!(casos, 288);
     }
 
     #[test]

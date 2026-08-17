@@ -315,6 +315,39 @@ pub fn inverse_face_map(pi: &[usize; 6]) -> [u8; 6] {
     inv
 }
 
+/// As 24 rotacoes do cubo inteiro, como mapas de face (pi[f] = destino de f).
+/// Geradas por fechamento a partir de y (giro em torno de U) e x (em torno de R).
+pub fn all_rotations() -> Vec<[usize; 6]> {
+    let y: [usize; 6] = [0, 2, 4, 3, 5, 1];
+    let x: [usize; 6] = [5, 1, 0, 2, 4, 3];
+    let compose = |a: &[usize; 6], b: &[usize; 6]| {
+        let mut r = [0usize; 6];
+        for f in 0..6 {
+            r[f] = b[a[f]];
+        }
+        r
+    };
+    let mut out: Vec<[usize; 6]> = vec![[0, 1, 2, 3, 4, 5]];
+    loop {
+        let mut grew = false;
+        let snapshot = out.clone();
+        for pi in &snapshot {
+            for g in [&y, &x] {
+                let c = compose(pi, g);
+                if !out.contains(&c) {
+                    out.push(c);
+                    grew = true;
+                }
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    debug_assert_eq!(out.len(), 24);
+    out
+}
+
 pub fn corner_name(i: usize) -> &'static str {
     ["URF", "UFL", "ULB", "UBR", "DFR", "DLF", "DBL", "DRB"][i]
 }

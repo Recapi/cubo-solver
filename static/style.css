@@ -230,6 +230,13 @@ select {
 .mv.done { opacity: .45; }
 .mv.now { background: var(--accent2); border-color: var(--accent); color: #fff; }
 .mv.p2 { border-bottom: 2px solid #a371f7; }
+/* etapas do CFOP: borda inferior cicla as cores */
+.mv.stg-0 { border-bottom: 2px solid #3fb950; }
+.mv.stg-1 { border-bottom: 2px solid #d29922; }
+.mv.stg-2 { border-bottom: 2px solid #a371f7; }
+.mv.stg-3 { border-bottom: 2px solid #58a6ff; }
+
+.cfop-row { border-top: 1px solid var(--line); padding-top: 12px; }
 
 .player { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .player.hidden { display: none; }

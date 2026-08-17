@@ -635,6 +635,84 @@
       });
   }
 
+  // ------------------------------------------------------------ CFOP
+  function doCfop() {
+    if (optJob) return;
+    var n = missingCount();
+    if (n > 0) {
+      say("Faltam " + n + " adesivo" + (n > 1 ? "s" : "") + " para poder resolver.", "err");
+      return;
+    }
+    var btn = $("btn-cfop");
+    btn.disabled = true;
+    btn.textContent = "Resolvendo...";
+    resetSolution();
+    refresh();
+    say("");
+    api("/api/cfop", {
+      facelets: state.join(""),
+      base: $("cfop-base").value,
+      front: $("cfop-front").value,
+    })
+      .then(function (j) {
+        // adapta para o formato do player, com as etapas junto
+        var names = [];
+        j.stages.forEach(function (s) { s.moves.forEach(function (m) { names.push(m); }); });
+        solution = {
+          solution: names,
+          states: j.states,
+          length: j.length,
+          stageOf: j.stage_of,
+          stages: j.stages,
+          hold: j.hold,
+        };
+        renderCfop(j);
+        jump(0);
+      })
+      .catch(function (e) {
+        resetSolution();
+        refresh();
+        say(e.message, "err");
+      })
+      .finally(function () {
+        btn.disabled = false;
+        btn.textContent = "Por etapas (CFOP)";
+      });
+  }
+
+  function renderCfop(j) {
+    var partes = ["<b>" + j.length + " movimentos</b>"];
+    j.stages.forEach(function (s) {
+      partes.push(s.name.split(" — ")[0].split(" (")[0] + " " + s.moves.length);
+    });
+    partes.push(j.time_ms + " ms");
+    $("result").innerHTML = partes.join(" &middot; ") +
+      "<br><b>" + j.hold + "</b> O cubo 3D já está nessa orientação.";
+
+    var box = $("moves");
+    box.innerHTML = "";
+    var flat = 0;
+    j.stages.forEach(function (s, si) {
+      s.moves.forEach(function (m) {
+        var b = document.createElement("button");
+        b.className = "mv stg-" + (si % 4);
+        b.textContent = m;
+        b.title = s.name + " — movimento " + (flat + 1) + ": " + moveDesc(m);
+        (function (i) {
+          b.addEventListener("click", function () { stopPlay(); jump(i); });
+        })(flat);
+        box.appendChild(b);
+        flat++;
+      });
+    });
+
+    $("player").classList.remove("hidden");
+    $("move-now").classList.remove("hidden");
+    $("p-range").max = j.length;
+    $("p-range").value = 0;
+    say("Solução por etapas pronta. Siga etapa por etapa no player.", "ok");
+  }
+
   function renderSolution(j) {
     if (j.length === 0) {
       $("result").innerHTML = "<b>Este cubo já está resolvido.</b>";
@@ -694,7 +772,11 @@
       var name = solution.solution[step];
       mn.classList.remove("done");
       $("mn-chip").textContent = name;
-      $("mn-title").textContent = "Movimento " + (step + 1) + " de " + solution.length;
+      var titulo = "Movimento " + (step + 1) + " de " + solution.length;
+      if (solution.stageOf) {
+        titulo = solution.stages[solution.stageOf[step]].name + " · " + titulo;
+      }
+      $("mn-title").textContent = titulo;
       $("mn-text").textContent = moveDesc(name);
     } else {
       mn.classList.add("done");
@@ -758,6 +840,7 @@
     stateChanged();
   });
   $("btn-apply").addEventListener("click", doApply);
+  $("btn-cfop").addEventListener("click", doCfop);
   $("seq").addEventListener("keydown", function (e) { if (e.key === "Enter") doApply(); });
   $("btn-solve").addEventListener("click", function () {
     if (optJob) {
