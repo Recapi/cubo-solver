@@ -2,6 +2,7 @@ mod coord;
 mod cube;
 mod facelet;
 mod optimal;
+mod partial;
 mod search;
 mod sym;
 mod tables;
@@ -408,6 +409,27 @@ async fn api_opt_status(
     Ok(Json(v))
 }
 
+#[derive(Deserialize)]
+struct AllowedReq {
+    /// Planificacao parcial: 54 simbolos, '.' = nao pintado.
+    facelets: String,
+    /// Posicao do adesivo (0..53).
+    pos: usize,
+}
+
+/// Quais cores podem entrar na posicao sem tornar o cubo impossivel.
+async fn api_allowed(
+    State(_st): State<AppState>,
+    Json(req): Json<AllowedReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let cols = partial::allowed_colors(&req.facelets, req.pos).map_err(bad_request)?;
+    let letters: Vec<String> = cols
+        .iter()
+        .map(|&c| (facelet::FACE_CHARS[c] as char).to_string())
+        .collect();
+    Ok(Json(serde_json::json!({ "colors": letters })))
+}
+
 async fn api_opt_cancel(
     State(st): State<AppState>,
     axum::extract::Path(id): axum::extract::Path<u64>,
@@ -704,6 +726,7 @@ async fn main() {
         .route("/api/solve", post(api_solve))
         .route("/api/scramble", post(api_scramble))
         .route("/api/apply", post(api_apply))
+        .route("/api/allowed", post(api_allowed))
         .route("/api/optimal/start", post(api_opt_start))
         .route("/api/optimal/status/{id}", get(api_opt_status))
         .route("/api/optimal/cancel/{id}", post(api_opt_cancel))
@@ -1102,6 +1125,79 @@ mod tests {
         if o.optimal {
             assert_eq!(o.lower_bound, o.moves.len());
         }
+    }
+
+    #[test]
+    fn parcial_so_permite_cores_completaveis() {
+        let tables = Tables::build();
+        let mut rng = Rng::new();
+
+        // Revelar um estado valido adesivo a adesivo, em ordem aleatoria:
+        // a cor verdadeira nunca pode ser bloqueada, e no ultimo adesivo ela
+        // deve ser a UNICA permitida.
+        for _ in 0..4 {
+            let scr = random_scramble(&mut rng, 25);
+            let alvo: Vec<char> = facelet::to_facelets(&apply_moves(&SOLVED, &scr, &tables))
+                .chars()
+                .collect();
+            let mut par: Vec<char> = ".".repeat(54).chars().collect();
+            for f in 0..6 {
+                par[f * 9 + 4] = alvo[f * 9 + 4];
+            }
+            let mut ordem: Vec<usize> = (0..54).filter(|p| p % 9 != 4).collect();
+            for i in (1..ordem.len()).rev() {
+                let j = rng.below(i as u64 + 1) as usize;
+                ordem.swap(i, j);
+            }
+            for (k, &pos) in ordem.iter().enumerate() {
+                let s: String = par.iter().collect();
+                let allowed = partial::allowed_colors(&s, pos).unwrap();
+                let verdadeira = "URFDLB".chars().position(|c| c == alvo[pos]).unwrap();
+                assert!(
+                    allowed.contains(&verdadeira),
+                    "cor verdadeira bloqueada na posicao {pos} (passo {k})"
+                );
+                if k == ordem.len() - 1 {
+                    assert_eq!(allowed.len(), 1, "ultimo adesivo deveria ser unico");
+                }
+                par[pos] = alvo[pos];
+            }
+            let completo: String = par.iter().collect();
+            assert!(facelet::to_cubie(&completo).is_ok());
+        }
+
+        // Canto UBR com U e B pintados: o terceiro adesivo so pode ser R.
+        let mut par: Vec<char> = ".".repeat(54).chars().collect();
+        for (f, c) in "URFDLB".chars().enumerate() {
+            par[f * 9 + 4] = c;
+        }
+        par[2] = 'U'; // U3 do canto UBR
+        par[45] = 'B'; // B1 do canto UBR
+        let s: String = par.iter().collect();
+        let allowed = partial::allowed_colors(&s, 11).unwrap(); // R3
+        assert_eq!(allowed, vec![1], "deveria restar apenas R");
+
+        // Duas pecas iguais: pintar URF inteiro e tentar repetir em UFL
+        let mut par: Vec<char> = ".".repeat(54).chars().collect();
+        for (f, c) in "URFDLB".chars().enumerate() {
+            par[f * 9 + 4] = c;
+        }
+        // URF = [8, 9, 20] com cores U R F
+        par[8] = 'U';
+        par[9] = 'R';
+        par[20] = 'F';
+        // UFL = [6, 18, 38]: pintar U e F; o terceiro nao pode ser R (peca repetida)
+        par[6] = 'U';
+        par[18] = 'F';
+        let s: String = par.iter().collect();
+        let allowed = partial::allowed_colors(&s, 38).unwrap();
+        assert!(!allowed.contains(&1), "nao pode repetir a peca URF");
+        assert!(allowed.contains(&4), "L deveria ser possivel (peca UFL)");
+
+        // erros de entrada
+        assert!(partial::allowed_colors("...", 0).is_err());
+        let sem_centro = ".".repeat(54);
+        assert!(partial::allowed_colors(&sem_centro, 0).is_err());
     }
 
     #[test]

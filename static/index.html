@@ -24,9 +24,10 @@
       </div>
 
       <p class="hint">
-        Escolha uma cor e clique nos quadradinhos (pode arrastar).
-        Os centros definem a orienta&ccedil;&atilde;o &mdash; segure o cubo com o
-        <b>branco em cima</b> e o <b>verde na frente</b>.
+        Use <b>Preencher guiado</b> para inserir o seu cubo face a face: o adesivo
+        da vez fica destacado e s&oacute; as cores poss&iacute;veis ficam liberadas.
+        Ou pinte livre: escolha uma cor e clique nos quadradinhos (pode arrastar).
+        Segure o cubo com o <b>branco em cima</b> e o <b>verde na frente</b>.
       </p>
 
       <div class="palette" id="palette"></div>
@@ -36,9 +37,15 @@
       </div>
 
       <div class="row">
+        <button id="btn-guided" class="btn primary">Preencher guiado</button>
         <button id="btn-scramble" class="btn">Embaralhar</button>
         <button id="btn-solved" class="btn">Cubo resolvido</button>
         <button id="btn-clear" class="btn">Limpar</button>
+      </div>
+
+      <div class="row hidden" id="guided-bar">
+        <button id="btn-undo" class="btn">&larr; Desfazer</button>
+        <button id="btn-exit-guided" class="btn">Sair do guiado</button>
       </div>
 
       <div class="row seq-row">

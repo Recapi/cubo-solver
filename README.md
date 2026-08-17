@@ -22,11 +22,17 @@ Para mexer no front-end, edite `static\` e recompile.
 
 ## Usar
 
-1. **Pinte o cubo** — escolha uma cor e clique nos quadradinhos (dá para arrastar;
-   botão direito apaga). Os centros definem a orientação: segure o cubo com o
-   **branco em cima** e o **verde na frente**.
-   Se o seu cubo tem outro esquema de cores, pode repintar os centros também —
-   o servidor deduz as faces a partir deles.
+1. **Insira o cubo** — do jeito guiado ou livre:
+   - **Preencher guiado**: o app pede um adesivo por vez, face a face; o
+     adesivo-alvo fica destacado, a câmera do cubo 3D vira sozinha para a face
+     da vez, e a paleta **só libera as cores fisicamente possíveis** naquela
+     posição (o servidor analisa peças, orientações e paridades do cubo inteiro
+     a cada clique — cor impossível fica bloqueada, então é impossível inserir
+     um cubo inválido). Tem desfazer, e clicar num adesivo vazio muda o alvo.
+   - **Livre**: escolha uma cor e clique nos quadradinhos (dá para arrastar;
+     botão direito apaga). Os centros definem a orientação: segure o cubo com o
+     **branco em cima** e o **verde na frente**. Se o seu cubo tem outro esquema
+     de cores, pode repintar os centros — o servidor deduz as faces deles.
 2. **Resolver** — a solução aparece em notação padrão. Os movimentos com sublinhado
    roxo são os da fase 2. Quatro modos de busca:
    - **rápido** — primeira solução ≤ 20 (menos de 1 ms);
@@ -157,6 +163,7 @@ Qualquer conjunto de 6 caracteres distintos serve — as faces são deduzidas do
 | `POST /api/solve` | `{facelets, max_len?, target_len?, timeout_ms?, min_ms?, threads?}` | `{solution[], notation, length, phase1, phase2, time_ms, nodes, solutions, threads, states[]}` |
 | `POST /api/scramble` | `{length?}` | `{facelets, scramble[], notation}` |
 | `POST /api/apply` | `{moves, facelets?}` | `{facelets, moves[]}` |
+| `POST /api/allowed` | `{facelets (parcial, '.' = vazio), pos}` | `{colors[]}` — cores que mantêm o cubo completável |
 | `GET /api/health` | — | `ok` |
 
 Parâmetros do `solve`: `max_len` (1–30, padrão 20) é o tamanho máximo aceitável;
@@ -204,6 +211,7 @@ src/
   coord.rs    conversoes estado <-> coordenadas numericas
   facelet.rs  planificacao <-> estado, validacao, rotacoes do cubo inteiro
   tables.rs   tabelas de movimento e de poda (BFS paralelo no boot)
+  partial.rs  analise de planificacoes parciais (quais cores podem entrar onde)
   sym.rs      16 simetrias do eixo U/D + tabelas das fases 1 e 2 (cache)
   xtable.rs   tabela X do modo otimo (3,3 bilhoes de estados, mod 3 em 2 bits)
   search.rs   IDA* das duas fases, multi-thread

@@ -45,6 +45,8 @@
   var netCells = [];
   var cubeCells = []; // indice do adesivo -> plano 3d do cubinho
   var cubies = []; // {el, x, y, z}
+  var orientTo = null; // vira a camera para uma face (so no modo guiado)
+  var guided = null; // { stack: [pos...], target: pos } quando o modo guiado esta ativo
 
   var $ = function (id) { return document.getElementById(id); };
 
@@ -67,6 +69,11 @@
       b.title = "cor da face " + FACE_LABEL[f];
       b.innerHTML = "<span>" + FACE_LABEL[f] + "</span>";
       b.addEventListener("click", function () {
+        if (guided) {
+          // no modo guiado, clicar numa cor liberada pinta o adesivo-alvo
+          if (!b.classList.contains("off")) guidedPaint(f);
+          return;
+        }
         selected = f;
         Array.prototype.forEach.call(p.children, function (c) {
           c.classList.toggle("sel", c.dataset.face === f);
@@ -96,11 +103,17 @@
       var t = e.target.closest(".st");
       if (!t) return;
       e.preventDefault();
+      var i = +t.dataset.i;
+      if (guided) {
+        // no guiado, clicar num adesivo vazio escolhe ele como alvo
+        if (i % 9 !== 4 && FACES.indexOf(state[i]) < 0) setTarget(i);
+        return;
+      }
       painting = true;
-      paint(+t.dataset.i, selected);
+      paint(i, selected);
     });
     net.addEventListener("pointermove", function (e) {
-      if (!painting) return;
+      if (!painting || guided) return;
       var el = document.elementFromPoint(e.clientX, e.clientY);
       if (el && el.classList.contains("st")) paint(+el.dataset.i, selected);
     });
@@ -109,7 +122,7 @@
       var t = e.target.closest(".st");
       if (!t) return;
       e.preventDefault();
-      paint(+t.dataset.i, ".");
+      if (!guided) paint(+t.dataset.i, ".");
     });
   }
 
@@ -158,11 +171,15 @@
       }
     });
 
-    // camera arrastavel (e so isso — a camera nunca se mexe sozinha)
-    var rx = -24, ry = -34, drag = null;
+    // camera arrastavel; no modo guiado ela tambem vira para a face da vez
+    var rx = -24, ry = -34, drag = null, animT = null;
     var scene = $("scene");
+    var applyCam = function () {
+      c.style.transform = "rotateX(" + rx + "deg) rotateY(" + ry + "deg)";
+    };
     scene.addEventListener("pointerdown", function (e) {
       drag = { x: e.clientX, y: e.clientY, rx: rx, ry: ry };
+      c.classList.remove("anim");
       scene.classList.add("dragging");
       scene.setPointerCapture(e.pointerId);
     });
@@ -170,11 +187,25 @@
       if (!drag) return;
       ry = drag.ry + (e.clientX - drag.x) * 0.5;
       rx = Math.max(-89, Math.min(89, drag.rx - (e.clientY - drag.y) * 0.5));
-      c.style.transform = "rotateX(" + rx + "deg) rotateY(" + ry + "deg)";
+      applyCam();
     });
     var end = function () { drag = null; scene.classList.remove("dragging"); };
     scene.addEventListener("pointerup", end);
     scene.addEventListener("pointercancel", end);
+
+    var view = { U: [-62, -34], D: [42, -34], F: [-18, -24], B: [-18, 152], R: [-18, -66], L: [-18, 62] };
+    orientTo = function (face) {
+      if (drag) return;
+      var t = view[face];
+      if (!t) return;
+      var dy = ((t[1] - ry) % 360 + 540) % 360 - 180; // caminho mais curto
+      rx = t[0];
+      ry = ry + dy;
+      c.classList.add("anim");
+      applyCam();
+      clearTimeout(animT);
+      animT = setTimeout(function () { c.classList.remove("anim"); }, 500);
+    };
   }
 
   // --------------------------------------------------------------- animacao de camada
@@ -293,6 +324,7 @@
 
   /** Chamado depois de qualquer alteracao em `state`. */
   function stateChanged(msg, kind) {
+    if (guided) exitGuided(); // acoes externas (embaralhar etc.) saem do guiado
     resetSolution();
     refresh();
     if (msg !== undefined) {
@@ -307,6 +339,120 @@
     if (state[i] === color) return;
     state[i] = color;
     stateChanged();
+  }
+
+  // ------------------------------------------------------------ modo guiado
+  // Preenche face a face: o adesivo-alvo fica destacado, a camera vira para a
+  // face da vez e a paleta so libera as cores que mantem o cubo possivel.
+  var FACE_FILL_ORDER = ["U", "F", "R", "B", "L", "D"];
+
+  function guidedPositions() {
+    var out = [];
+    FACE_FILL_ORDER.forEach(function (f) {
+      var fi = FACES.indexOf(f);
+      for (var k = 0; k < 9; k++) if (k !== 4) out.push(fi * 9 + k);
+    });
+    return out;
+  }
+
+  function clearTargetMark() {
+    for (var i = 0; i < 54; i++) {
+      netCells[i].classList.remove("target");
+      cubeCells[i].classList.remove("tgt3");
+    }
+  }
+
+  function setPaletteAllowed(colors) { // null = modo livre, tudo liberado
+    Array.prototype.forEach.call($("palette").children, function (el) {
+      var off = colors !== null && colors.indexOf(el.dataset.face) < 0;
+      el.classList.toggle("off", off);
+    });
+  }
+
+  function partialString() {
+    return state.map(function (c) { return FACES.indexOf(c) >= 0 ? c : "."; }).join("");
+  }
+
+  function enterGuided() {
+    stateChanged(); // limpa solucao; a pintura ja feita e mantida
+    if (complete()) {
+      // cubo ja todo pintado: o guiado e para inserir um novo, comeca limpo
+      state = ".".repeat(54).split("");
+      for (var f = 0; f < 6; f++) state[f * 9 + 4] = FACES[f];
+      refresh();
+    }
+    guided = { stack: [], target: -1 };
+    $("btn-guided").classList.add("hidden");
+    $("guided-bar").classList.remove("hidden");
+    nextTarget();
+  }
+
+  function exitGuided(msg, kind) {
+    if (!guided) return;
+    guided = null;
+    clearTargetMark();
+    setPaletteAllowed(null);
+    $("btn-guided").classList.remove("hidden");
+    $("guided-bar").classList.add("hidden");
+    if (msg !== undefined) say(msg, kind || "");
+  }
+
+  function nextTarget() {
+    var order = guidedPositions();
+    for (var i = 0; i < order.length; i++) {
+      if (FACES.indexOf(state[order[i]]) < 0) {
+        setTarget(order[i]);
+        return;
+      }
+    }
+    exitGuided("Cubo completo e válido — pode resolver!", "ok");
+  }
+
+  function setTarget(pos) {
+    guided.target = pos;
+    clearTargetMark();
+    netCells[pos].classList.add("target");
+    cubeCells[pos].classList.add("tgt3");
+    if (orientTo) orientTo(FACES[Math.floor(pos / 9)]);
+    var faltam = state.filter(function (c) { return FACES.indexOf(c) < 0; }).length;
+    say("Pinte o adesivo destacado — cores impossíveis ficam bloqueadas (faltam " + faltam + ").");
+    setPaletteAllowed([]); // trava enquanto consulta o servidor
+    api("/api/allowed", { facelets: partialString(), pos: pos })
+      .then(function (j) {
+        if (!guided || guided.target !== pos) return;
+        if (j.colors.length === 0) {
+          // pintura previa (feita no modo livre) ja era impossivel
+          say("O que já estava pintado é impossível — recomeçando só com os centros.", "err");
+          state = ".".repeat(54).split("");
+          for (var f = 0; f < 6; f++) state[f * 9 + 4] = FACES[f];
+          guided.stack = [];
+          refresh();
+          nextTarget();
+          return;
+        }
+        setPaletteAllowed(j.colors);
+      })
+      .catch(function (e) {
+        exitGuided(e.message, "err");
+      });
+  }
+
+  function guidedPaint(color) {
+    if (!guided || guided.target < 0) return;
+    var pos = guided.target;
+    state[pos] = color;
+    guided.stack.push(pos);
+    resetSolution();
+    refresh();
+    nextTarget();
+  }
+
+  function guidedUndo() {
+    if (!guided || guided.stack.length === 0) return;
+    var pos = guided.stack.pop();
+    state[pos] = ".";
+    refresh();
+    setTarget(pos);
   }
 
   // --------------------------------------------------------------- api
@@ -596,6 +742,11 @@
   buildCube3d();
   refresh();
 
+  $("btn-guided").addEventListener("click", enterGuided);
+  $("btn-undo").addEventListener("click", guidedUndo);
+  $("btn-exit-guided").addEventListener("click", function () {
+    exitGuided("Modo guiado encerrado — a pintura ficou como está.");
+  });
   $("btn-scramble").addEventListener("click", doScramble);
   $("btn-solved").addEventListener("click", function () {
     state = SOLVED.split("");
