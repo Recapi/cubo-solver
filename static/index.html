@@ -69,6 +69,7 @@
             <option value="fast">r&aacute;pido</option>
             <option value="balanced" selected>equilibrado</option>
             <option value="best">melhor solu&ccedil;&atilde;o</option>
+            <option value="optimal">&oacute;timo (com prova)</option>
           </select>
         </label>
       </div>
@@ -81,12 +82,15 @@
           <label>m&aacute;ximo de movimentos
             <input id="opt-max" type="number" min="1" max="30" value="20"></label>
           <label>tempo de busca (ms)
-            <input id="opt-timeout" type="number" min="50" max="30000" step="50" value="4000"></label>
+            <input id="opt-timeout" type="number" min="50" max="600000" step="50" value="4000"></label>
           <label>threads
             <input id="opt-threads" type="number" min="1" max="12" placeholder="auto"></label>
         </div>
         <p class="adv-hint">alvo 0 = nunca parar cedo, usar o tempo todo procurando encurtar.
-           Mudar o modo acima preenche estes campos.</p>
+           Mudar o modo acima preenche estes campos. O modo <b>&oacute;timo</b> prova
+           que n&atilde;o existe solu&ccedil;&atilde;o menor &mdash; pode levar minutos;
+           se o tempo acabar, mostra a melhor solu&ccedil;&atilde;o e at&eacute; onde a
+           prova chegou.</p>
       </details>
 
       <div id="result" class="result"></div>

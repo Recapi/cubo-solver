@@ -191,6 +191,7 @@ select {
 
 .result { font-size: 13px; color: var(--fg-dim); min-height: 20px; margin-bottom: 10px; }
 .result b { color: var(--fg); font-size: 15px; }
+.result .opt-ok { color: var(--ok); font-size: 13px; }
 
 /* instrucao do movimento atual, em portugues */
 .move-now {

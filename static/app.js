@@ -351,6 +351,7 @@
     fast: { target: 20, max: 20, timeout: 300, min: 0 },
     balanced: { target: 20, max: 20, timeout: 4000, min: 60 },
     best: { target: 15, max: 20, timeout: 10000, min: 0 },
+    optimal: { target: 0, max: 20, timeout: 60000, min: 0 },
   };
   var modeMin = MODES.balanced.min;
 
@@ -371,6 +372,7 @@
       timeout_ms: Math.max(50, +$("opt-timeout").value || 4000),
       min_ms: modeMin,
     };
+    if ($("mode").value === "optimal") body.optimal = true;
     var th = +$("opt-threads").value;
     if (th > 0) body.threads = th;
     return body;
@@ -384,7 +386,8 @@
     }
     var btn = $("btn-solve");
     btn.disabled = true;
-    btn.textContent = "Resolvendo...";
+    btn.textContent =
+      $("mode").value === "optimal" ? "Provando... (pode demorar)" : "Resolvendo...";
     resetSolution();
     refresh();
     say("");
@@ -411,12 +414,20 @@
       $("result").innerHTML = "<b>Este cubo já está resolvido.</b>";
       return;
     }
-    $("result").innerHTML =
-      "<b>" + j.length + " movimentos</b> &middot; " +
-      j.time_ms + " ms &middot; " +
-      j.nodes.toLocaleString("pt-BR") + " nós em " + j.threads + " threads &middot; " +
-      "fase 1: " + j.phase1 + " / fase 2: " + j.phase2 +
-      (j.solutions > 1 ? " &middot; " + j.solutions + " soluções, ficou a melhor" : "");
+    var parts = [
+      "<b>" + j.length + " movimentos</b>",
+      (j.time_ms >= 2000 ? (j.time_ms / 1000).toFixed(1) + " s" : j.time_ms + " ms"),
+      j.nodes.toLocaleString("pt-BR") + " nós em " + j.threads + " threads",
+    ];
+    if (j.optimal === true) {
+      parts.push("<b class=\"opt-ok\">ÓTIMO — provado que não existe menor</b>");
+    } else if (typeof j.lower_bound === "number") {
+      parts.push("provado que não existe com menos de <b>" + j.lower_bound + "</b> (prova incompleta no tempo dado)");
+    } else {
+      parts.push("fase 1: " + j.phase1 + " / fase 2: " + j.phase2);
+      if (j.solutions > 1) parts.push(j.solutions + " soluções, ficou a melhor");
+    }
+    $("result").innerHTML = parts.join(" &middot; ");
 
     var box = $("moves");
     box.innerHTML = "";

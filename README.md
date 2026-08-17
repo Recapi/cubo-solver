@@ -28,10 +28,13 @@ Para mexer no front-end, edite `static\` e recompile.
    Se o seu cubo tem outro esquema de cores, pode repintar os centros também —
    o servidor deduz as faces a partir deles.
 2. **Resolver** — a solução aparece em notação padrão. Os movimentos com sublinhado
-   roxo são os da fase 2. Três modos de busca:
-   - **rápido** — primeira solução ≤ 20 (poucos ms);
-   - **equilibrado** (padrão) — 60 ms tentando encurtar (média ~18,7);
-   - **melhor solução** — usa até 10 s procurando encurtar (média ~18,4, máx. 19).
+   roxo são os da fase 2. Quatro modos de busca:
+   - **rápido** — primeira solução ≤ 20 (menos de 1 ms);
+   - **equilibrado** (padrão) — 60 ms tentando encurtar (média ~18,5);
+   - **melhor solução** — usa até 10 s procurando encurtar (média ~18,2, máx. 19);
+   - **ótimo (com prova)** — prova matematicamente que não existe solução menor.
+     Pode levar minutos; se o tempo acabar, mostra a melhor solução encontrada e
+     até onde a prova chegou ("provado ≥ N").
    Em **Avançado** dá para ajustar alvo, máximo, tempo e threads na mão.
 3. **Passo a passo** — use os controles (ou ←/→ e barra de espaço) para ver o cubo
    a cada movimento, na planificação e no 3D. Arraste o cubo 3D para girar a câmera.
@@ -75,6 +78,17 @@ desligam a tabela em máquinas com pouca RAM.
 Um detalhe que importa muito: **não basta parar a fase 1 em 12 movimentos** (a
 distância máxima até G1). Uma fase 1 mais longa costuma deixar o cubo numa posição
 de G1 bem mais fácil, derrubando o total. A busca vai até 21.
+
+### Solver ótimo (estilo Korf)
+
+O modo ótimo faz IDA\* no espaço completo dos 18 movimentos, com heurística =
+máximo das distâncias exatas de fase 1 **nos três eixos** do cubo (cada uma é um
+limite inferior da distância real). O two-phase entra primeiro como limite
+superior; cada iteração do IDA\* que termina vazia prova "não existe solução com
+d movimentos". Quando a prova alcança o tamanho da melhor solução, ela é
+**provadamente ótima**. A busca ainda escolhe atacar o cubo ou o seu inverso
+(o que tiver heurística maior — d(c) = d(c⁻¹)) e divide as raízes da árvore
+entre as threads. Com o tempo esgotado, o resultado informa o limite provado.
 
 ### Paralelismo
 
@@ -123,10 +137,12 @@ Qualquer conjunto de 6 caracteres distintos serve — as faces são deduzidas do
 Parâmetros do `solve`: `max_len` (1–30, padrão 20) é o tamanho máximo aceitável;
 `target_len` (padrão = `max_len`) faz a busca parar assim que acha algo com até
 esse tamanho — **0 = nunca parar cedo**, usar o tempo todo encurtando;
-`timeout_ms` (50–30000, padrão 4000) limita a busca; `min_ms` (padrão 60) é o
-esforço mínimo antes de aceitar parar no alvo; `threads` (1–12, padrão: núcleos).
-`solutions` na resposta diz quantas soluções completas foram encontradas (cada
-uma melhor que a anterior).
+`timeout_ms` (50–600000; padrão 4000, ou 60000 no modo ótimo) limita a busca;
+`min_ms` (padrão 60) é o esforço mínimo antes de aceitar parar no alvo;
+`threads` (1–12, padrão: núcleos); `optimal: true` liga o modo ótimo (exige a
+tabela de simetria). `solutions` na resposta diz quantas soluções completas
+foram encontradas. No modo ótimo a resposta traz também `optimal` (a prova
+fechou?) e `lower_bound` (provado que não existe solução menor que isso).
 
 `states` traz a planificação depois de cada movimento (`length + 1` entradas), que é
 o que alimenta o passo a passo da página.
@@ -138,6 +154,7 @@ aresta invertida, paridade inválida, contagem de cores errada, peça repetida.
 
 ```powershell
 .\target\release\cubo-solver.exe --bench 500                 # estatisticas
+.\target\release\cubo-solver.exe --bench-optimal 3           # provas de otimalidade
 .\target\release\cubo-solver.exe --scramble "R U R' U'"      # sequencia -> planificacao
 .\target\release\cubo-solver.exe --solve "<54 caracteres>"   # resolve e imprime
 ```
@@ -157,6 +174,7 @@ src/
   tables.rs   tabelas de movimento e de poda (BFS paralelo no boot)
   sym.rs      16 simetrias do eixo U/D + tabela grande da fase 1 (140 MB, cache)
   search.rs   IDA* das duas fases, multi-thread
+  optimal.rs  solver otimo (IDA* de 3 eixos) com prova de otimalidade
   main.rs     servidor axum, API JSON, modos de linha de comando, testes
 static/       pagina, estilo e script (embutidos no binario)
 ```

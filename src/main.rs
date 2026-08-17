@@ -1,6 +1,7 @@
 ﻿mod coord;
 mod cube;
 mod facelet;
+mod optimal;
 mod search;
 mod sym;
 mod tables;
@@ -132,6 +133,9 @@ struct SolveReq {
     /// Numero de threads (1..=12, padrao: nucleos da maquina).
     #[serde(default)]
     threads: Option<usize>,
+    /// true = modo otimo: prova que nao existe solucao menor (pode demorar).
+    #[serde(default)]
+    optimal: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -145,6 +149,12 @@ struct SolveResp {
     nodes: usize,
     solutions: usize,
     threads: usize,
+    /// So no modo otimo: a solucao e provadamente otima?
+    #[serde(skip_serializing_if = "Option::is_none")]
+    optimal: Option<bool>,
+    /// So no modo otimo: provado que nao existe solucao com menos que isto.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    lower_bound: Option<usize>,
     states: Vec<String>,
 }
 
@@ -189,40 +199,66 @@ async fn api_solve(
 ) -> Result<Json<SolveResp>, ApiError> {
     let cube = facelet::to_cubie(&req.facelets).map_err(bad_request)?;
     let max_len = req.max_len.unwrap_or(20).clamp(1, 30);
+    let want_optimal = req.optimal.unwrap_or(false);
     let params = search::SolveParams {
         max_len,
         target_len: req.target_len.unwrap_or(max_len).min(max_len),
-        timeout_ms: req.timeout_ms.unwrap_or(4000).clamp(50, 30_000),
+        timeout_ms: req
+            .timeout_ms
+            .unwrap_or(if want_optimal { 60_000 } else { 4000 })
+            .clamp(50, 600_000),
         min_ms: req.min_ms.unwrap_or(60),
         threads: req.threads.unwrap_or_else(search::default_threads).clamp(1, 12),
     };
 
     let res = tokio::task::spawn_blocking(move || {
         let start = Instant::now();
-        let sol = search::solve(&cube, &t, params);
-        sol.map(|s| {
-            let elapsed = start.elapsed().as_millis();
-            let mut states = Vec::with_capacity(s.moves.len() + 1);
+        let build = |moves: &[u8],
+                     phase1: usize,
+                     nodes: usize,
+                     solutions: usize,
+                     threads: usize,
+                     optimal: Option<bool>,
+                     lower_bound: Option<usize>| {
+            let mut states = Vec::with_capacity(moves.len() + 1);
             let mut c = cube;
             states.push(facelet::to_facelets(&c));
-            for &m in &s.moves {
+            for &m in moves {
                 c = c.multiply(&t.mc[m as usize]);
                 states.push(facelet::to_facelets(&c));
             }
-            let names = notation(&s.moves);
+            let names = notation(moves);
             SolveResp {
                 notation: names.join(" "),
-                length: s.moves.len(),
-                phase1: s.phase1,
-                phase2: s.moves.len() - s.phase1,
-                time_ms: elapsed,
-                nodes: s.nodes,
-                solutions: s.solutions,
-                threads: s.threads,
+                length: moves.len(),
+                phase1,
+                phase2: moves.len() - phase1,
+                time_ms: start.elapsed().as_millis(),
+                nodes,
+                solutions,
+                threads,
+                optimal,
+                lower_bound,
                 solution: names,
                 states,
             }
-        })
+        };
+        if want_optimal {
+            optimal::solve_optimal(&cube, &t, params.timeout_ms, params.threads).map(|o| {
+                build(
+                    &o.moves,
+                    o.moves.len(),
+                    o.nodes,
+                    1,
+                    o.threads,
+                    Some(o.optimal),
+                    Some(o.lower_bound),
+                )
+            })
+        } else {
+            search::solve(&cube, &t, params)
+                .map(|s| build(&s.moves, s.phase1, s.nodes, s.solutions, s.threads, None, None))
+        }
     })
     .await
     .map_err(|e| bad_request(format!("falha interna: {e}")))?;
@@ -348,6 +384,33 @@ fn run_bench(t: &Tables, n: usize) {
     println!();
 }
 
+fn run_bench_optimal(t: &Tables, n: usize) {
+    let mut rng = Rng::new();
+    let timeout: u64 = env_num("BENCH_TIMEOUT", 120_000);
+    println!("Resolvendo {n} cubos aleatorios no modo OTIMO (ate {timeout} ms cada)...");
+    let mut proven = 0usize;
+    for i in 0..n {
+        let scr = random_scramble(&mut rng, 25);
+        let cube = apply_moves(&SOLVED, &scr, t);
+        let start = Instant::now();
+        let o = optimal::solve_optimal(&cube, t, timeout, search::default_threads())
+            .unwrap_or_else(|e| panic!("caso {i}: {e}"));
+        let end = apply_moves(&cube, &o.moves, t);
+        assert!(end.is_solved(), "caso {i}: solucao invalida");
+        if o.optimal {
+            proven += 1;
+        }
+        println!(
+            "  caso {i}: {} movimentos, {} em {:.1} s, {:.0} M nos",
+            o.moves.len(),
+            if o.optimal { "OTIMO provado".to_string() } else { format!("provado >= {}", o.lower_bound) },
+            start.elapsed().as_secs_f64(),
+            o.nodes as f64 / 1e6
+        );
+    }
+    println!("provados: {proven}/{n}");
+}
+
 // ---------------------------------------------------------------------------
 
 #[tokio::main]
@@ -391,6 +454,14 @@ async fn main() {
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(100);
         run_bench(&tables, n);
+        return;
+    }
+    if let Some(pos) = args.iter().position(|a| a == "--bench-optimal") {
+        let n = args
+            .get(pos + 1)
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(3);
+        run_bench_optimal(&tables, n);
         return;
     }
     if let Some(pos) = args.iter().position(|a| a == "--solve") {
@@ -767,6 +838,68 @@ mod tests {
                 let b = sym::raw_of_edges(&sym::edge_conj(&c2, &edge_syms[s], &edge_invs[s]));
                 assert_eq!(a, b, "conjugado depende do preenchimento (sim {s}, raw {raw})");
             }
+        }
+    }
+
+    #[test]
+    fn mapeamento_de_eixos_esta_certo() {
+        // Acompanhar as coordenadas dos 3 eixos com movimentos mapeados tem que
+        // dar o mesmo resultado que girar o cubo inteiro e ler as coordenadas.
+        let tables = Tables::build();
+        let am = optimal::axis_move_table();
+        let mut rng = Rng::new();
+        for _ in 0..20 {
+            let scr = random_scramble(&mut rng, 15);
+            let state = apply_moves(&SOLVED, &scr, &tables);
+            let want = optimal::coords_of(&state);
+            let mut got = [(0u16, 0u16, 0u16); 3];
+            for a in 0..3 {
+                let (mut t, mut f, mut s) = (0u16, 0u16, 0u16);
+                for &m in &scr {
+                    let ma = am[a][m as usize] as usize;
+                    t = tables.twist_move[t as usize * 18 + ma];
+                    f = tables.flip_move[f as usize * 18 + ma];
+                    s = tables.slice_move[s as usize * 18 + ma];
+                }
+                got[a] = (t, f, s);
+            }
+            assert_eq!(want, got);
+        }
+    }
+
+    #[test]
+    fn modo_otimo_prova_e_resolve() {
+        let mut tables = Tables::build();
+        tables.big = Some(sym::BigP1::load_or_build(&tables, None, false));
+        let mut rng = Rng::new();
+
+        // sem a tabela grande o modo otimo recusa
+        let sem_big = Tables::build();
+        let scr = random_scramble(&mut rng, 10);
+        let cube = apply_moves(&SOLVED, &scr, &sem_big);
+        assert!(optimal::solve_optimal(&cube, &sem_big, 1000, 4).is_err());
+
+        // cubos faceis: prova rapida e tamanho nunca maior que o embaralhamento
+        for len in [4usize, 6, 8] {
+            let scr = random_scramble(&mut rng, len);
+            let cube = apply_moves(&SOLVED, &scr, &tables);
+            let o = optimal::solve_optimal(&cube, &tables, 20_000, search::default_threads())
+                .unwrap();
+            assert!(apply_moves(&cube, &o.moves, &tables).is_solved());
+            assert!(o.optimal, "cubo de {len} movimentos deveria ser provado otimo");
+            assert!(o.moves.len() <= len);
+            assert_eq!(o.lower_bound, o.moves.len());
+        }
+
+        // cubo dificil com pouco tempo: solucao valida + limite provado coerente
+        let scr = random_scramble(&mut rng, 25);
+        let cube = apply_moves(&SOLVED, &scr, &tables);
+        let o = optimal::solve_optimal(&cube, &tables, 3_000, search::default_threads()).unwrap();
+        assert!(apply_moves(&cube, &o.moves, &tables).is_solved());
+        assert!(o.lower_bound <= o.moves.len());
+        assert!(o.lower_bound >= 8, "limite inferior {} suspeito", o.lower_bound);
+        if o.optimal {
+            assert_eq!(o.lower_bound, o.moves.len());
         }
     }
 
