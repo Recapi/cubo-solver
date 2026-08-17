@@ -1,10 +1,11 @@
-﻿mod coord;
+mod coord;
 mod cube;
 mod facelet;
 mod optimal;
 mod search;
 mod sym;
 mod tables;
+mod xtable;
 
 use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -193,10 +194,66 @@ fn bad_request(msg: String) -> (StatusCode, Json<serde_json::Value>) {
 
 type ApiError = (StatusCode, Json<serde_json::Value>);
 
+#[allow(clippy::too_many_arguments)]
+fn build_solve_resp(
+    t: &Tables,
+    cube: &CubieCube,
+    moves: &[u8],
+    phase1: usize,
+    nodes: usize,
+    solutions: usize,
+    threads: usize,
+    optimal: Option<bool>,
+    lower_bound: Option<usize>,
+    time_ms: u128,
+) -> SolveResp {
+    let mut states = Vec::with_capacity(moves.len() + 1);
+    let mut c = *cube;
+    states.push(facelet::to_facelets(&c));
+    for &m in moves {
+        c = c.multiply(&t.mc[m as usize]);
+        states.push(facelet::to_facelets(&c));
+    }
+    let names = notation(moves);
+    SolveResp {
+        notation: names.join(" "),
+        length: moves.len(),
+        phase1,
+        phase2: moves.len() - phase1,
+        time_ms,
+        nodes,
+        solutions,
+        threads,
+        optimal,
+        lower_bound,
+        solution: names,
+        states,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Estado do servidor: tabelas + jobs do modo otimo (progresso e cancelamento)
+// ---------------------------------------------------------------------------
+
+struct OptJob {
+    ctrl: optimal::SolveCtrl,
+    started: Instant,
+    done: std::sync::atomic::AtomicBool,
+    result: std::sync::Mutex<Option<Result<SolveResp, String>>>,
+}
+
+#[derive(Clone)]
+struct AppState {
+    tables: Arc<Tables>,
+    jobs: Arc<std::sync::Mutex<std::collections::HashMap<u64, Arc<OptJob>>>>,
+    next_job: Arc<std::sync::atomic::AtomicU64>,
+}
+
 async fn api_solve(
-    State(t): State<Arc<Tables>>,
+    State(st): State<AppState>,
     Json(req): Json<SolveReq>,
 ) -> Result<Json<SolveResp>, ApiError> {
+    let t = st.tables;
     let cube = facelet::to_cubie(&req.facelets).map_err(bad_request)?;
     let max_len = req.max_len.unwrap_or(20).clamp(1, 30);
     let want_optimal = req.optimal.unwrap_or(false);
@@ -213,39 +270,11 @@ async fn api_solve(
 
     let res = tokio::task::spawn_blocking(move || {
         let start = Instant::now();
-        let build = |moves: &[u8],
-                     phase1: usize,
-                     nodes: usize,
-                     solutions: usize,
-                     threads: usize,
-                     optimal: Option<bool>,
-                     lower_bound: Option<usize>| {
-            let mut states = Vec::with_capacity(moves.len() + 1);
-            let mut c = cube;
-            states.push(facelet::to_facelets(&c));
-            for &m in moves {
-                c = c.multiply(&t.mc[m as usize]);
-                states.push(facelet::to_facelets(&c));
-            }
-            let names = notation(moves);
-            SolveResp {
-                notation: names.join(" "),
-                length: moves.len(),
-                phase1,
-                phase2: moves.len() - phase1,
-                time_ms: start.elapsed().as_millis(),
-                nodes,
-                solutions,
-                threads,
-                optimal,
-                lower_bound,
-                solution: names,
-                states,
-            }
-        };
         if want_optimal {
-            optimal::solve_optimal(&cube, &t, params.timeout_ms, params.threads).map(|o| {
-                build(
+            optimal::solve_optimal(&cube, &t, params.timeout_ms, params.threads, None).map(|o| {
+                build_solve_resp(
+                    &t,
+                    &cube,
                     &o.moves,
                     o.moves.len(),
                     o.nodes,
@@ -253,11 +282,24 @@ async fn api_solve(
                     o.threads,
                     Some(o.optimal),
                     Some(o.lower_bound),
+                    start.elapsed().as_millis(),
                 )
             })
         } else {
-            search::solve(&cube, &t, params)
-                .map(|s| build(&s.moves, s.phase1, s.nodes, s.solutions, s.threads, None, None))
+            search::solve(&cube, &t, params).map(|s| {
+                build_solve_resp(
+                    &t,
+                    &cube,
+                    &s.moves,
+                    s.phase1,
+                    s.nodes,
+                    s.solutions,
+                    s.threads,
+                    None,
+                    None,
+                    start.elapsed().as_millis(),
+                )
+            })
         }
     })
     .await
@@ -266,10 +308,121 @@ async fn api_solve(
     res.map(Json).map_err(bad_request)
 }
 
+// ---------------------------------------------------------------------------
+// Jobs do modo otimo: inicia em segundo plano, consulta progresso, cancela
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct OptStartReq {
+    facelets: String,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    threads: Option<usize>,
+}
+
+async fn api_opt_start(
+    State(st): State<AppState>,
+    Json(req): Json<OptStartReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let cube = facelet::to_cubie(&req.facelets).map_err(bad_request)?;
+    let timeout_ms = req.timeout_ms.unwrap_or(60_000).clamp(500, 600_000);
+    let threads = req.threads.unwrap_or_else(search::default_threads).clamp(1, 12);
+
+    // limpeza de jobs concluidos e esquecidos
+    {
+        let mut jobs = st.jobs.lock().unwrap();
+        jobs.retain(|_, j| {
+            !(j.done.load(std::sync::atomic::Ordering::Relaxed)
+                && j.started.elapsed().as_secs() > 3600)
+        });
+    }
+
+    let id = st.next_job.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let job = Arc::new(OptJob {
+        ctrl: optimal::SolveCtrl::new(),
+        started: Instant::now(),
+        done: std::sync::atomic::AtomicBool::new(false),
+        result: std::sync::Mutex::new(None),
+    });
+    st.jobs.lock().unwrap().insert(id, job.clone());
+
+    let tables = st.tables.clone();
+    tokio::task::spawn_blocking(move || {
+        let start = Instant::now();
+        let out = optimal::solve_optimal(&cube, &tables, timeout_ms, threads, Some(&job.ctrl))
+            .map(|o| {
+                build_solve_resp(
+                    &tables,
+                    &cube,
+                    &o.moves,
+                    o.moves.len(),
+                    o.nodes,
+                    1,
+                    o.threads,
+                    Some(o.optimal),
+                    Some(o.lower_bound),
+                    start.elapsed().as_millis(),
+                )
+            });
+        *job.result.lock().unwrap() = Some(out);
+        job.done.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+
+    Ok(Json(serde_json::json!({ "job": id })))
+}
+
+async fn api_opt_status(
+    State(st): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<u64>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let job = st
+        .jobs
+        .lock()
+        .unwrap()
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| bad_request("job desconhecido".into()))?;
+    use std::sync::atomic::Ordering::Relaxed;
+    let done = job.done.load(Relaxed);
+    let mut v = serde_json::json!({
+        "done": done,
+        "elapsed_ms": job.started.elapsed().as_millis() as u64,
+        "lower_bound": job.ctrl.lower_bound.load(Relaxed),
+        "best_len": job.ctrl.best_len.load(Relaxed),
+        "nodes": job.ctrl.nodes.load(Relaxed),
+    });
+    if done {
+        let guard = job.result.lock().unwrap();
+        match guard.as_ref() {
+            Some(Ok(r)) => {
+                v["result"] = serde_json::to_value(r)
+                    .map_err(|e| bad_request(format!("falha interna: {e}")))?;
+            }
+            Some(Err(e)) => v["error"] = serde_json::Value::String(e.clone()),
+            None => {}
+        }
+        drop(guard);
+        st.jobs.lock().unwrap().remove(&id);
+    }
+    Ok(Json(v))
+}
+
+async fn api_opt_cancel(
+    State(st): State<AppState>,
+    axum::extract::Path(id): axum::extract::Path<u64>,
+) -> Json<serde_json::Value> {
+    if let Some(job) = st.jobs.lock().unwrap().get(&id) {
+        job.ctrl.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    Json(serde_json::json!({ "ok": true }))
+}
+
 async fn api_scramble(
-    State(t): State<Arc<Tables>>,
+    State(st): State<AppState>,
     Json(req): Json<ScrambleReq>,
 ) -> Json<ScrambleResp> {
+    let t = st.tables;
     let len = req.length.unwrap_or(25).clamp(1, 100);
     let mut rng = Rng::new();
     let moves = random_scramble(&mut rng, len);
@@ -283,9 +436,10 @@ async fn api_scramble(
 }
 
 async fn api_apply(
-    State(t): State<Arc<Tables>>,
+    State(st): State<AppState>,
     Json(req): Json<ApplyReq>,
 ) -> Result<Json<ApplyResp>, ApiError> {
+    let t = st.tables;
     let base = match req.facelets.as_deref() {
         Some(f) if !f.trim().is_empty() => facelet::to_cubie(f).map_err(bad_request)?,
         _ => SOLVED,
@@ -319,6 +473,14 @@ fn env_num<T: std::str::FromStr>(name: &str, default: T) -> T {
     std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
+/// BENCH_SEED fixa a sequencia de cubos: permite comparar A/B com os mesmos casos.
+fn bench_rng() -> Rng {
+    match std::env::var("BENCH_SEED").ok().and_then(|v| v.parse::<u64>().ok()) {
+        Some(s) => Rng(s | 1),
+        None => Rng::new(),
+    }
+}
+
 fn bench_params() -> search::SolveParams {
     search::SolveParams {
         max_len: env_num("BENCH_MAX", 20),
@@ -330,7 +492,7 @@ fn bench_params() -> search::SolveParams {
 }
 
 fn run_bench(t: &Tables, n: usize) {
-    let mut rng = Rng::new();
+    let mut rng = bench_rng();
     let mut total_len = 0usize;
     let mut total_ms = 0u128;
     let mut worst = 0usize;
@@ -385,7 +547,7 @@ fn run_bench(t: &Tables, n: usize) {
 }
 
 fn run_bench_optimal(t: &Tables, n: usize) {
-    let mut rng = Rng::new();
+    let mut rng = bench_rng();
     let timeout: u64 = env_num("BENCH_TIMEOUT", 120_000);
     println!("Resolvendo {n} cubos aleatorios no modo OTIMO (ate {timeout} ms cada)...");
     let mut proven = 0usize;
@@ -393,7 +555,7 @@ fn run_bench_optimal(t: &Tables, n: usize) {
         let scr = random_scramble(&mut rng, 25);
         let cube = apply_moves(&SOLVED, &scr, t);
         let start = Instant::now();
-        let o = optimal::solve_optimal(&cube, t, timeout, search::default_threads())
+        let o = optimal::solve_optimal(&cube, t, timeout, search::default_threads(), None)
             .unwrap_or_else(|e| panic!("caso {i}: {e}"));
         let end = apply_moves(&cube, &o.moves, t);
         assert!(end.is_solved(), "caso {i}: solucao invalida");
@@ -455,6 +617,26 @@ async fn main() {
         let t2 = Instant::now();
         tables.big2 = Some(sym::BigP2::load_or_build(&tables, cache2.as_deref(), !cached2));
         println!("pronto em {:.1} s", t2.elapsed().as_secs_f64());
+
+        // Tabela X do modo otimo: pesada (~930 MB de RAM; ~2 GB durante a
+        // primeira geracao). NO_XTABLE=1 ou --no-xtable desligam so ela.
+        let no_x = args.iter().any(|a| a == "--no-xtable")
+            || std::env::var("NO_XTABLE").map(|v| v == "1").unwrap_or(false);
+        if no_x {
+            println!("Tabela X do modo otimo desligada (--no-xtable).");
+        } else {
+            let cachex = exe_dir.as_ref().map(|d| d.join("p15sym.cache"));
+            let cachedx = cachex.as_deref().map(|p| p.exists()).unwrap_or(false);
+            if cachedx {
+                print!("Carregando tabela X do modo otimo (~930 MB)... ");
+            } else {
+                println!("Gerando tabela X do modo otimo (~930 MB, alguns minutos so na primeira vez):");
+            }
+            let _ = std::io::stdout().flush();
+            let tx = Instant::now();
+            tables.bigx = Some(xtable::BigX::load_or_build(&tables, cachex.as_deref(), !cachedx));
+            println!("pronto em {:.1} s", tx.elapsed().as_secs_f64());
+        }
     }
     let tables = Arc::new(tables);
 
@@ -510,6 +692,11 @@ async fn main() {
         })
         .unwrap_or(8080);
 
+    let state = AppState {
+        tables,
+        jobs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+        next_job: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+    };
     let app = Router::new()
         .route("/", get(page_index))
         .route("/style.css", get(page_css))
@@ -517,8 +704,11 @@ async fn main() {
         .route("/api/solve", post(api_solve))
         .route("/api/scramble", post(api_scramble))
         .route("/api/apply", post(api_apply))
+        .route("/api/optimal/start", post(api_opt_start))
+        .route("/api/optimal/status/{id}", get(api_opt_status))
+        .route("/api/optimal/cancel/{id}", post(api_opt_cancel))
         .route("/api/health", get(|| async { "ok" }))
-        .with_state(tables);
+        .with_state(state);
 
     let addr = format!("0.0.0.0:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -888,13 +1078,13 @@ mod tests {
         let sem_big = Tables::build();
         let scr = random_scramble(&mut rng, 10);
         let cube = apply_moves(&SOLVED, &scr, &sem_big);
-        assert!(optimal::solve_optimal(&cube, &sem_big, 1000, 4).is_err());
+        assert!(optimal::solve_optimal(&cube, &sem_big, 1000, 4, None).is_err());
 
         // cubos faceis: prova rapida e tamanho nunca maior que o embaralhamento
         for len in [4usize, 6, 8] {
             let scr = random_scramble(&mut rng, len);
             let cube = apply_moves(&SOLVED, &scr, &tables);
-            let o = optimal::solve_optimal(&cube, &tables, 20_000, search::default_threads())
+            let o = optimal::solve_optimal(&cube, &tables, 20_000, search::default_threads(), None)
                 .unwrap();
             assert!(apply_moves(&cube, &o.moves, &tables).is_solved());
             assert!(o.optimal, "cubo de {len} movimentos deveria ser provado otimo");
@@ -905,12 +1095,136 @@ mod tests {
         // cubo dificil com pouco tempo: solucao valida + limite provado coerente
         let scr = random_scramble(&mut rng, 25);
         let cube = apply_moves(&SOLVED, &scr, &tables);
-        let o = optimal::solve_optimal(&cube, &tables, 3_000, search::default_threads()).unwrap();
+        let o = optimal::solve_optimal(&cube, &tables, 3_000, search::default_threads(), None).unwrap();
         assert!(apply_moves(&cube, &o.moves, &tables).is_solved());
         assert!(o.lower_bound <= o.moves.len());
         assert!(o.lower_bound >= 8, "limite inferior {} suspeito", o.lower_bound);
         if o.optimal {
             assert_eq!(o.lower_bound, o.moves.len());
+        }
+    }
+
+    #[test]
+    fn epos_ida_e_volta_e_move() {
+        // ida e volta da coordenada
+        let mut ep = [0u8; 12];
+        for i in 0..N_EPOS {
+            set_epos(i as u16, &mut ep);
+            assert_eq!(get_epos(&ep) as usize, i, "epos {i}");
+        }
+        // aplicar so a permutacao de arestas do movimento (como a tabela
+        // epos_move faz) da o mesmo epos que a multiplicacao completa
+        let tables = Tables::build();
+        let mut rng = Rng::new();
+        for _ in 0..100 {
+            let scr = random_scramble(&mut rng, 15);
+            let c = apply_moves(&SOLVED, &scr, &tables);
+            for m in 0..18 {
+                let d = c.multiply(&tables.mc[m]);
+                let mut ep2 = [0u8; 12];
+                for i in 0..12 {
+                    ep2[i] = c.ep[tables.mc[m].ep[i] as usize];
+                }
+                assert_eq!(get_epos(&d.ep), get_epos(&ep2));
+            }
+        }
+        // epos refina slice: mesmo conjunto de posicoes
+        for _ in 0..50 {
+            let scr = random_scramble(&mut rng, 20);
+            let c = apply_moves(&SOLVED, &scr, &tables);
+            let mut ep2 = [0u8; 12];
+            set_epos(get_epos(&c.ep), &mut ep2);
+            assert_eq!(get_slice(&ep2), get_slice(&c.ep));
+        }
+    }
+
+    /// Pesado (~2-4 min): constroi a tabela X inteira e valida contra a fase 1.
+    /// Rodar com: cargo test --release tabela_x -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn tabela_x_e_exata_e_domina() {
+        let mut tables = Tables::build();
+        tables.big = Some(sym::BigP1::load_or_build(&tables, None, false));
+        let x = xtable::BigX::load_or_build(&tables, None, true);
+        let big = tables.big.as_ref().unwrap();
+
+        // estado resolvido e o objetivo
+        assert!(x.is_goal(0, 0, coord::epos_solved()));
+        assert_eq!(x.exact(&tables, 0, 0, coord::epos_solved()), 0);
+
+        let mut rng = Rng::new();
+        // exatidao incremental: seguir um caminho aleatorio acompanhando o
+        // mod 3 tem que terminar na mesma distancia que a descida da tabela
+        for _ in 0..50 {
+            let scr = random_scramble(&mut rng, 25);
+            let c = apply_moves(&SOLVED, &scr, &tables);
+            let (mut tw, mut f, mut e) =
+                (get_twist(&c.co), get_flip(&c.eo), get_epos(&c.ep));
+            let mut exact = x.exact(&tables, tw, f, e) as i32;
+            let mut m3 = x.m3(tw, f, e);
+            for _ in 0..30 {
+                let m = rng.below(18) as usize;
+                tw = tables.twist_move[tw as usize * 18 + m];
+                f = tables.flip_move[f as usize * 18 + m];
+                e = x.epos_move[e as usize * 18 + m];
+                let m3n = x.m3(tw, f, e);
+                exact += match (m3n + 3 - m3) % 3 {
+                    1 => 1,
+                    2 => -1,
+                    _ => 0,
+                };
+                m3 = m3n;
+            }
+            assert_eq!(exact, x.exact(&tables, tw, f, e) as i32, "rastreamento divergiu");
+        }
+
+        // dominancia: distancia X >= distancia exata de fase 1 (e o refinamento)
+        for _ in 0..300 {
+            let scr = random_scramble(&mut rng, 22);
+            let c = apply_moves(&SOLVED, &scr, &tables);
+            let hx = x.exact(&tables, get_twist(&c.co), get_flip(&c.eo), get_epos(&c.ep));
+            let h1 = big.h(get_twist(&c.co), get_flip(&c.eo), get_slice(&c.ep));
+            assert!(hx >= h1, "X ({hx}) menor que fase 1 ({h1})");
+        }
+
+        // admissibilidade: estado a k movimentos tem distancia <= k
+        for _ in 0..100 {
+            let k = 1 + rng.below(10) as usize;
+            let scr = random_scramble(&mut rng, k);
+            let c = apply_moves(&SOLVED, &scr, &tables);
+            let hx = x.exact(&tables, get_twist(&c.co), get_flip(&c.eo), get_epos(&c.ep));
+            assert!(hx as usize <= k, "hx = {hx} para estado a {k} movimentos");
+        }
+
+        // o prover com a tabela X da os MESMOS otimos que o prover da fase 1
+        tables.bigx = Some(x);
+        let mut casos = Vec::new();
+        for _ in 0..3 {
+            let scr = random_scramble(&mut rng, 12);
+            casos.push(apply_moves(&SOLVED, &scr, &tables));
+        }
+        for (i, cube) in casos.iter().enumerate() {
+            let com_x =
+                optimal::solve_optimal(cube, &tables, 60_000, search::default_threads(), None)
+                    .unwrap();
+            assert!(com_x.optimal, "caso {i} nao provado com X");
+            assert!(apply_moves(cube, &com_x.moves, &tables).is_solved());
+            let sem_x = {
+                let bx = tables.bigx.take();
+                let r =
+                    optimal::solve_optimal(cube, &tables, 60_000, search::default_threads(), None)
+                        .unwrap();
+                tables.bigx = bx;
+                r
+            };
+            assert!(sem_x.optimal, "caso {i} nao provado sem X");
+            assert_eq!(
+                com_x.moves.len(),
+                sem_x.moves.len(),
+                "caso {i}: otimos diferentes ({} com X, {} sem)",
+                com_x.moves.len(),
+                sem_x.moves.len()
+            );
         }
     }
 

@@ -77,27 +77,42 @@ permutações (troca de índices), então o espelho não complica nada.
 
 Detalhes de implementação da fase 1: a conjugação de cantos é feita no nível da
 planificação (imune à aritmética de orientação espelhada, fonte clássica de bug)
-e a de arestas por multiplicação direta (mod 2 não sofre com espelho). A geração
-das duas tabelas leva ~2,3 s na primeira execução e fica em cache (`p1sym.cache`
-e `p2sym.cache`, ao lado do executável); depois carrega em ~0,4 s. `--no-bigtable`
-ou `NO_BIGTABLE=1` desligam as duas em máquinas com pouca RAM (~250 MB no total).
+e a de arestas por multiplicação direta (mod 2 não sofre com espelho). As
+tabelas ficam em cache ao lado do executável (`p1sym.cache`, `p2sym.cache`,
+`p15sym.cache`) e são regeradas sozinhas se apagadas. `--no-bigtable` /
+`NO_BIGTABLE=1` desligam todas (RAM total com todas: ~1,2 GB).
 
 Um detalhe que importa muito: **não basta parar a fase 1 em 12 movimentos** (a
 distância máxima até G1). Uma fase 1 mais longa costuma deixar o cubo numa posição
 de G1 bem mais fácil, derrubando o total. A busca vai até 21.
 
+### Tabela X (a heurística do modo ótimo)
+
+A fase 1 refinada com a **identidade** das arestas da fatia: orientações (2187 ×
+2048) × posição *ordenada* das 4 arestas da fatia (12·11·10·9 = 11.880). São
+**3,3 bilhões de estados** por eixo; as 16 simetrias reduzem (flip × epos) a
+1.523.864 classes, e a distância é guardada **mod 3, em 2 bits** (~830 MB — em
+1 byte seriam 3,3 GB). O mod 3 basta: cada movimento muda a distância em −1, 0
+ou +1, então a diferença mod 3 entre vizinhos dá o delta exato e a busca carrega
+a distância exata incrementalmente; a da raiz sai "descendo" pela tabela. A
+distância máxima nesse espaço é 13, e a média fica ~1 movimento acima da fase 1
+— no IDA\*, +1 de heurística média corta ~13× os nós da iteração final. Gerada
+por BFS com fronteira em bitmap em ~30 s na primeira execução (pico ~2 GB de
+RAM), cacheada em `p15sym.cache` (~930 MB). `--no-xtable` / `NO_XTABLE=1`
+desligam só ela (o modo ótimo cai para a heurística de fase 1).
+
 ### Solver ótimo (estilo Korf)
 
 O modo ótimo faz IDA\* no espaço completo dos 18 movimentos, com heurística =
-máximo das distâncias exatas de fase 1 **nos três eixos** do cubo (cada uma é um
-limite inferior da distância real). O two-phase entra primeiro como limite
+máximo das distâncias exatas da **tabela X nos três eixos** do cubo (cada uma é
+um limite inferior da distância real). O two-phase entra primeiro como limite
 superior; cada iteração do IDA\* que termina vazia prova "não existe solução com
 d movimentos". Quando a prova alcança o tamanho da melhor solução, ela é
 **provadamente ótima**. A busca ainda escolhe atacar o cubo ou o seu inverso
-(o que tiver heurística maior — d(c) = d(c⁻¹)), divide a raiz em 270 subárvores
-entre as threads e as ordena por heurística crescente, para a iteração final
-encontrar a solução mais cedo. Com o tempo esgotado, o resultado informa o
-limite provado.
+(o que tiver heurística maior — d(c) = d(c⁻¹)), divide a raiz em ~4.050
+subárvores entre as threads e as ordena por heurística crescente, para a
+iteração final encontrar a solução mais cedo. Com o tempo esgotado (ou
+cancelado), o resultado informa o limite provado.
 
 ### Paralelismo
 
@@ -154,6 +169,12 @@ tabela de simetria). `solutions` na resposta diz quantas soluções completas
 foram encontradas. No modo ótimo a resposta traz também `optimal` (a prova
 fechou?) e `lower_bound` (provado que não existe solução menor que isso).
 
+O modo ótimo também roda como **job com progresso**: `POST /api/optimal/start`
+`{facelets, timeout_ms?, threads?}` → `{job}`; `GET /api/optimal/status/{job}` →
+`{done, elapsed_ms, lower_bound, best_len, nodes, result?}` (a página consulta a
+cada 700 ms e mostra "provando ≥ N" ao vivo); `POST /api/optimal/cancel/{job}`
+cancela — a resposta vem com a melhor solução e o limite provado até ali.
+
 `states` traz a planificação depois de cada movimento (`length + 1` entradas), que é
 o que alimenta o passo a passo da página.
 
@@ -170,7 +191,8 @@ aresta invertida, paridade inválida, contagem de cores errada, peça repetida.
 ```
 
 O benchmark aceita `BENCH_TARGET`, `BENCH_MAX`, `BENCH_TIMEOUT` (ms), `BENCH_MIN`
-(ms), `BENCH_THREADS` e `BENCH_VERBOSE=1`. Ex.: `BENCH_MIN=0` mede o tempo até a
+(ms), `BENCH_THREADS`, `BENCH_VERBOSE=1` e `BENCH_SEED` (fixa a sequência de
+cubos — essencial para comparações A/B). Ex.: `BENCH_MIN=0` mede o tempo até a
 primeira solução ≤ alvo; `BENCH_TARGET=15 BENCH_TIMEOUT=10000` mede o modo
 "melhor solução".
 
@@ -182,10 +204,11 @@ src/
   coord.rs    conversoes estado <-> coordenadas numericas
   facelet.rs  planificacao <-> estado, validacao, rotacoes do cubo inteiro
   tables.rs   tabelas de movimento e de poda (BFS paralelo no boot)
-  sym.rs      16 simetrias do eixo U/D + tabela grande da fase 1 (140 MB, cache)
+  sym.rs      16 simetrias do eixo U/D + tabelas das fases 1 e 2 (cache)
+  xtable.rs   tabela X do modo otimo (3,3 bilhoes de estados, mod 3 em 2 bits)
   search.rs   IDA* das duas fases, multi-thread
-  optimal.rs  solver otimo (IDA* de 3 eixos) com prova de otimalidade
-  main.rs     servidor axum, API JSON, modos de linha de comando, testes
+  optimal.rs  solver otimo (IDA* de 3 eixos) com prova, progresso e cancelamento
+  main.rs     servidor axum, API JSON, jobs do modo otimo, CLI, testes
 static/       pagina, estilo e script (embutidos no binario)
 ```
 

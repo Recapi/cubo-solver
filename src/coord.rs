@@ -9,6 +9,7 @@ pub const N_SLICE: usize = 495; // C(12,4)
 pub const N_CPERM: usize = 40320; // 8!
 pub const N_UPERM: usize = 40320; // 8!
 pub const N_SPERM: usize = 24; // 4!
+pub const N_EPOS: usize = 11880; // 12*11*10*9: posicoes ORDENADAS das 4 arestas da fatia
 
 /// Coeficiente binomial para n,k <= 12.
 pub fn cnk(n: u32, k: u32) -> u32 {
@@ -106,6 +107,65 @@ pub fn set_slice(idx: u16, ep: &mut [u8; 12]) {
             other_val += 1;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Posicao ordenada das 4 arestas da fatia: onde estao FR, FL, BL e BR,
+// individualmente (nao so o conjunto). Refina slice x sperm.
+// ---------------------------------------------------------------------------
+
+pub fn get_epos(ep: &[u8; 12]) -> u16 {
+    let mut pos = [0usize; 4];
+    for i in 0..12 {
+        if ep[i] >= 8 {
+            pos[(ep[i] - 8) as usize] = i;
+        }
+    }
+    // codigo fatorial parcial: rank do slot entre os ainda disponiveis
+    let base = [11 * 10 * 9, 10 * 9, 9, 1];
+    let mut avail = [true; 12];
+    let mut idx = 0usize;
+    for k in 0..4 {
+        let mut r = 0usize;
+        for j in 0..pos[k] {
+            if avail[j] {
+                r += 1;
+            }
+        }
+        idx += r * base[k];
+        avail[pos[k]] = false;
+    }
+    idx as u16
+}
+
+pub fn set_epos(idx: u16, ep: &mut [u8; 12]) {
+    let mut idx = idx as usize;
+    let base = [11 * 10 * 9, 10 * 9, 9, 1];
+    let mut avail: Vec<u8> = (0..12).collect();
+    let mut slots = [0usize; 4];
+    for k in 0..4 {
+        let r = idx / base[k];
+        idx %= base[k];
+        slots[k] = avail.remove(r) as usize;
+    }
+    let mut other = 0u8;
+    for i in 0..12 {
+        if let Some(k) = slots.iter().position(|&s| s == i) {
+            ep[i] = 8 + k as u8;
+        } else {
+            ep[i] = other;
+            other += 1;
+        }
+    }
+}
+
+/// epos do cubo resolvido (arestas 8..11 nos slots 8..11, em ordem).
+pub fn epos_solved() -> u16 {
+    let mut ep = [0u8; 12];
+    for (i, e) in ep.iter_mut().enumerate() {
+        *e = i as u8;
+    }
+    get_epos(&ep)
 }
 
 // ---------------------------------------------------------------------------

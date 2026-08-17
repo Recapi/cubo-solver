@@ -282,6 +282,7 @@
   function resetSolution() {
     stopPlay();
     abortAnim();
+    stopOptimalJob(true); // mexer no cubo cancela uma prova em andamento
     solution = null;
     step = 0;
     $("moves").innerHTML = "";
@@ -378,19 +379,93 @@
     return body;
   }
 
+  // ------------------------------------------------------------- modo otimo
+  // roda como "job" no servidor: a pagina consulta o progresso e pode cancelar
+  var optJob = null; // { id, timer }
+
+  function stopOptimalJob(cancelServer) {
+    if (!optJob) return;
+    clearInterval(optJob.timer);
+    if (cancelServer) fetch("/api/optimal/cancel/" + optJob.id, { method: "POST" });
+    optJob = null;
+    var btn = $("btn-solve");
+    btn.disabled = false;
+    btn.textContent = "Resolver";
+  }
+
+  function fmtNodes(n) {
+    if (n >= 1e9) return (n / 1e9).toFixed(1) + " B";
+    if (n >= 1e6) return (n / 1e6).toFixed(0) + " M";
+    return n.toLocaleString("pt-BR");
+  }
+
+  function startOptimalJob() {
+    var btn = $("btn-solve");
+    resetSolution();
+    refresh();
+    say("");
+    var body = {
+      facelets: state.join(""),
+      timeout_ms: Math.max(500, +$("opt-timeout").value || 60000),
+    };
+    var th = +$("opt-threads").value;
+    if (th > 0) body.threads = th;
+    btn.disabled = true;
+    btn.textContent = "Iniciando...";
+
+    api("/api/optimal/start", body)
+      .then(function (j) {
+        btn.disabled = false;
+        btn.textContent = "Cancelar prova";
+        var id = j.job;
+        optJob = {
+          id: id,
+          timer: setInterval(function () {
+            fetch("/api/optimal/status/" + id)
+              .then(function (r) { return r.json(); })
+              .then(function (s) {
+                if (!optJob || optJob.id !== id) return;
+                if (!s.done) {
+                  say(
+                    "Provando: não existe com menos de " + s.lower_bound +
+                    " · melhor até agora " + s.best_len +
+                    " · " + fmtNodes(s.nodes) + " nós · " +
+                    Math.round(s.elapsed_ms / 1000) + "s", "");
+                  return;
+                }
+                stopOptimalJob(false);
+                if (s.error) { say(s.error, "err"); return; }
+                solution = s.result;
+                renderSolution(s.result);
+                jump(0);
+              })
+              .catch(function () { stopOptimalJob(false); say("perdi contato com o servidor", "err"); });
+          }, 700),
+        };
+      })
+      .catch(function (e) {
+        btn.disabled = false;
+        btn.textContent = "Resolver";
+        say(e.message, "err");
+      });
+  }
+
   function doSolve() {
     var n = missingCount();
     if (n > 0) {
       say("Faltam " + n + " adesivo" + (n > 1 ? "s" : "") + " para poder resolver.", "err");
       return;
     }
+    if ($("mode").value === "optimal") {
+      startOptimalJob();
+      return;
+    }
     var btn = $("btn-solve");
     btn.disabled = true;
-    var rotulo = $("mode").value === "optimal" ? "Provando" : "Resolvendo";
-    btn.textContent = rotulo + "...";
+    btn.textContent = "Resolvendo...";
     var t0 = Date.now();
     var tick = setInterval(function () {
-      btn.textContent = rotulo + "... " + Math.round((Date.now() - t0) / 1000) + "s";
+      btn.textContent = "Resolvendo... " + Math.round((Date.now() - t0) / 1000) + "s";
     }, 1000);
     resetSolution();
     refresh();
@@ -533,7 +608,15 @@
   });
   $("btn-apply").addEventListener("click", doApply);
   $("seq").addEventListener("keydown", function (e) { if (e.key === "Enter") doApply(); });
-  $("btn-solve").addEventListener("click", doSolve);
+  $("btn-solve").addEventListener("click", function () {
+    if (optJob) {
+      // o botao vira "Cancelar prova" durante um job do modo otimo
+      say("Cancelando...", "");
+      fetch("/api/optimal/cancel/" + optJob.id, { method: "POST" });
+      return; // o poll entrega o resultado parcial em seguida
+    }
+    doSolve();
+  });
   $("mode").addEventListener("change", function (e) { applyMode(e.target.value); });
   applyMode($("mode").value);
 

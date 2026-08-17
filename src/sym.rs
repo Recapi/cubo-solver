@@ -27,7 +27,7 @@ pub const N_CLASS: usize = 64430;
 pub const N_CLASS2: usize = 2768;
 const CACHE_VERSION: u32 = 1;
 
-fn workers() -> usize {
+pub(crate) fn workers() -> usize {
     std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 16)
 }
 
@@ -367,7 +367,7 @@ impl BigP1 {
     }
 }
 
-fn build_twist_conj(syms: &[SymXform]) -> Vec<u16> {
+pub(crate) fn build_twist_conj(syms: &[SymXform]) -> Vec<u16> {
     let mut twist_conj = vec![0u16; N_TWIST * N_SYM];
     let next = AtomicUsize::new(0);
     let out = std::sync::Mutex::new(&mut twist_conj);
@@ -411,12 +411,12 @@ fn build_twist_conj(syms: &[SymXform]) -> Vec<u16> {
 }
 
 // Vec<u8> <-> Vec<AtomicU8>: AtomicU8 tem a mesma representacao em memoria de u8.
-fn as_atomic(v: Vec<u8>) -> Vec<AtomicU8> {
+pub(crate) fn as_atomic(v: Vec<u8>) -> Vec<AtomicU8> {
     let mut v = std::mem::ManuallyDrop::new(v);
     unsafe { Vec::from_raw_parts(v.as_mut_ptr() as *mut AtomicU8, v.len(), v.capacity()) }
 }
 
-fn as_plain(v: Vec<AtomicU8>) -> Vec<u8> {
+pub(crate) fn as_plain(v: Vec<AtomicU8>) -> Vec<u8> {
     let mut v = std::mem::ManuallyDrop::new(v);
     unsafe { Vec::from_raw_parts(v.as_mut_ptr() as *mut u8, v.len(), v.capacity()) }
 }

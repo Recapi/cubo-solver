@@ -3,12 +3,16 @@
 use crate::coord::*;
 use crate::cube::*;
 use crate::sym::{BigP1, BigP2};
+use crate::xtable::BigX;
 
 pub struct Tables {
     /// Tabela grande da fase 1 (distancia exata, ~140 MB), quando habilitada.
     pub big: Option<BigP1>,
     /// Tabela grande da fase 2 (cantos x arestas U/D, ~112 MB), quando habilitada.
     pub big2: Option<BigP2>,
+    /// Tabela X do solver otimo (fase 1 + identidade das arestas da fatia,
+    /// mod 3, ~930 MB), quando habilitada.
+    pub bigx: Option<BigX>,
 
     pub mc: [CubieCube; N_MOVES],
 
@@ -133,6 +137,7 @@ impl Tables {
         Tables {
             big: None,
             big2: None,
+            bigx: None,
             mc,
             twist_move,
             flip_move,

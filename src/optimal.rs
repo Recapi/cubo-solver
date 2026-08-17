@@ -1,11 +1,12 @@
 //! Solver otimo (estilo Korf): IDA* no espaco completo dos 18 movimentos.
 //!
-//! Heuristica: o maximo das distancias EXATAS de fase 1 nos tres eixos do cubo
-//! (tabela de simetria). Cada uma e um limite inferior da distancia real,
-//! porque qualquer solucao precisa, em particular, levar o cubo ao G1 daquele
-//! eixo. A busca itera profundidades crescentes; uma iteracao que termina sem
-//! solucao PROVA que nao existe solucao com aquele tamanho. O two-phase fornece
-//! o limite superior; quando os dois se encontram, o otimo esta provado.
+//! Heuristica preferida: a tabela X (fase 1 refinada com a identidade das
+//! arestas da fatia, distancia exata via mod 3) nos tres eixos do cubo. Sem
+//! ela, cai para a distancia exata de fase 1 (tabela de simetria). Ambas sao
+//! limites inferiores da distancia real; a busca itera profundidades
+//! crescentes e cada iteracao vazia PROVA que nao existe solucao daquele
+//! tamanho. O two-phase fornece o limite superior; quando os dois se
+//! encontram, o otimo esta provado.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -15,7 +16,6 @@ use crate::coord::*;
 use crate::cube::*;
 use crate::facelet::{rotate_cube, rotation_perm, ROT_PI};
 use crate::search::{self, SolveParams};
-use crate::sym::BigP1;
 use crate::tables::Tables;
 
 pub struct OptimalOutcome {
@@ -28,23 +28,29 @@ pub struct OptimalOutcome {
     pub threads: usize,
 }
 
-/// Coordenadas de fase 1 do mesmo estado visto pelos tres eixos.
-#[derive(Clone, Copy)]
-struct Coords {
-    a: [(u16, u16, u16); 3], // (twist, flip, slice) por eixo
+/// Progresso/cancelamento compartilhado com quem chamou (API de jobs).
+pub struct SolveCtrl {
+    pub cancel: AtomicBool,
+    pub lower_bound: AtomicUsize,
+    pub best_len: AtomicUsize,
+    pub nodes: AtomicUsize,
 }
 
-struct Ctx<'a> {
-    t: &'a Tables,
-    big: &'a BigP1,
-    /// axis_moves[eixo][m] = indice do movimento no referencial girado.
-    axis_moves: [[u8; 18]; 3],
-    root: CubieCube,
-    stop: AtomicBool,
-    deadline: Instant,
-    nodes: AtomicUsize,
-    cursor: AtomicUsize,
-    found: Mutex<Option<Vec<u8>>>,
+impl SolveCtrl {
+    pub fn new() -> SolveCtrl {
+        SolveCtrl {
+            cancel: AtomicBool::new(false),
+            lower_bound: AtomicUsize::new(0),
+            best_len: AtomicUsize::new(0),
+            nodes: AtomicUsize::new(0),
+        }
+    }
+}
+
+impl Default for SolveCtrl {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub fn axis_move_table() -> [[u8; 18]; 3] {
@@ -57,76 +63,193 @@ pub fn axis_move_table() -> [[u8; 18]; 3] {
     am
 }
 
-#[inline(always)]
-fn step(ctx: &Ctx, co: &Coords, m: u8) -> Coords {
-    let mut r = *co;
-    for (a, slot) in r.a.iter_mut().enumerate() {
-        let ma = ctx.axis_moves[a][m as usize] as usize;
-        let (t, f, s) = *slot;
-        *slot = (
-            ctx.t.twist_move[t as usize * 18 + ma],
-            ctx.t.flip_move[f as usize * 18 + ma],
-            ctx.t.slice_move[s as usize * 18 + ma],
-        );
-    }
-    r
-}
-
-#[inline(always)]
-fn h3(ctx: &Ctx, co: &Coords) -> u8 {
-    let mut h = 0u8;
-    for &(t, f, s) in &co.a {
-        h = h.max(ctx.big.h(t, f, s));
-    }
-    h
-}
-
-/// Coordenadas dos tres eixos de um estado qualquer (para a raiz e testes).
+/// Coordenadas de fase 1 dos tres eixos de um estado (para testes e raiz).
 pub fn coords_of(cube: &CubieCube) -> [(u16, u16, u16); 3] {
     let mut out = [(0u16, 0u16, 0u16); 3];
     for a in 0..3 {
-        let c = if a == 0 {
-            *cube
-        } else {
-            let pi = &ROT_PI[a];
-            rotate_cube(cube, pi, &rotation_perm(pi))
-        };
+        let c = axis_view(cube, a);
         out[a] = (get_twist(&c.co), get_flip(&c.eo), get_slice(&c.ep));
     }
     out
 }
 
-struct Dfs<'a, 'b> {
-    ctx: &'a Ctx<'b>,
+fn axis_view(cube: &CubieCube, a: usize) -> CubieCube {
+    if a == 0 {
+        *cube
+    } else {
+        let pi = &ROT_PI[a];
+        rotate_cube(cube, pi, &rotation_perm(pi))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Heuristicas intercambiaveis
+// ---------------------------------------------------------------------------
+
+trait Heur: Sync {
+    type St: Copy + Send + Sync;
+    fn root(&self, cube: &CubieCube) -> Self::St;
+    fn step(&self, s: &Self::St, m: u8) -> Self::St;
+    fn h(&self, s: &Self::St) -> u8;
+}
+
+/// Fallback: distancia exata de fase 1 nos 3 eixos (tabela de simetria).
+struct P1Heur<'a> {
+    t: &'a Tables,
+    big: &'a crate::sym::BigP1,
+    am: [[u8; 18]; 3],
+}
+
+impl<'a> Heur for P1Heur<'a> {
+    type St = [(u16, u16, u16); 3];
+
+    fn root(&self, cube: &CubieCube) -> Self::St {
+        coords_of(cube)
+    }
+
+    #[inline(always)]
+    fn step(&self, s: &Self::St, m: u8) -> Self::St {
+        let mut r = *s;
+        for (a, slot) in r.iter_mut().enumerate() {
+            let ma = self.am[a][m as usize] as usize;
+            let (t, f, sl) = *slot;
+            *slot = (
+                self.t.twist_move[t as usize * 18 + ma],
+                self.t.flip_move[f as usize * 18 + ma],
+                self.t.slice_move[sl as usize * 18 + ma],
+            );
+        }
+        r
+    }
+
+    #[inline(always)]
+    fn h(&self, s: &Self::St) -> u8 {
+        let mut h = 0u8;
+        for &(t, f, sl) in s {
+            h = h.max(self.big.h(t, f, sl));
+        }
+        h
+    }
+}
+
+/// Preferida: tabela X (com identidade das arestas da fatia), distancia exata
+/// carregada incrementalmente a partir do mod 3.
+#[derive(Clone, Copy)]
+struct XAx {
+    t: u16,
+    f: u16,
+    e: u16,
+    exact: u8,
+    m3: u8,
+}
+
+struct XHeur<'a> {
+    t: &'a Tables,
+    x: &'a crate::xtable::BigX,
+    am: [[u8; 18]; 3],
+}
+
+impl<'a> Heur for XHeur<'a> {
+    type St = [XAx; 3];
+
+    fn root(&self, cube: &CubieCube) -> Self::St {
+        let mut out = [XAx { t: 0, f: 0, e: 0, exact: 0, m3: 0 }; 3];
+        for a in 0..3 {
+            let c = axis_view(cube, a);
+            let (tw, f, e) = (get_twist(&c.co), get_flip(&c.eo), get_epos(&c.ep));
+            out[a] = XAx {
+                t: tw,
+                f,
+                e,
+                exact: self.x.exact(self.t, tw, f, e),
+                m3: self.x.m3(tw, f, e),
+            };
+        }
+        out
+    }
+
+    #[inline(always)]
+    fn step(&self, s: &Self::St, m: u8) -> Self::St {
+        let mut r = *s;
+        for (a, ax) in r.iter_mut().enumerate() {
+            let ma = self.am[a][m as usize] as usize;
+            let t2 = self.t.twist_move[ax.t as usize * 18 + ma];
+            let f2 = self.t.flip_move[ax.f as usize * 18 + ma];
+            let e2 = self.x.epos_move[ax.e as usize * 18 + ma];
+            let m3 = self.x.m3(t2, f2, e2);
+            // (m3 - anterior) mod 3: 1 = +1, 2 = -1, 0 = igual
+            let d = (m3 + 3 - ax.m3) % 3;
+            let exact = match d {
+                1 => ax.exact + 1,
+                2 => ax.exact - 1,
+                _ => ax.exact,
+            };
+            *ax = XAx { t: t2, f: f2, e: e2, exact, m3 };
+        }
+        r
+    }
+
+    #[inline(always)]
+    fn h(&self, s: &Self::St) -> u8 {
+        s[0].exact.max(s[1].exact).max(s[2].exact)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IDA* com prova, generico na heuristica
+// ---------------------------------------------------------------------------
+
+struct Ctx<'a, H: Heur> {
+    heur: &'a H,
+    t: &'a Tables,
+    root: CubieCube,
+    stop: AtomicBool,
+    deadline: Instant,
+    nodes: AtomicUsize,
+    cursor: AtomicUsize,
+    found: Mutex<Option<Vec<u8>>>,
+    ctrl: Option<&'a SolveCtrl>,
+}
+
+struct Dfs<'a, 'b, H: Heur> {
+    ctx: &'a Ctx<'b, H>,
     path: [u8; 24],
     counter: usize,
 }
 
-impl<'a, 'b> Dfs<'a, 'b> {
+impl<'a, 'b, H: Heur> Dfs<'a, 'b, H> {
     #[inline]
     fn should_stop(&mut self) -> bool {
         if self.ctx.stop.load(Ordering::Relaxed) {
             return true;
         }
         self.counter += 1;
-        if self.counter & 0x3FF == 0 && Instant::now() >= self.ctx.deadline {
-            self.ctx.stop.store(true, Ordering::Relaxed);
-            return true;
+        if self.counter & 0x3FF == 0 {
+            if let Some(c) = self.ctx.ctrl {
+                c.nodes.fetch_add(0x400, Ordering::Relaxed);
+                if c.cancel.load(Ordering::Relaxed) {
+                    self.ctx.stop.store(true, Ordering::Relaxed);
+                    return true;
+                }
+            }
+            if Instant::now() >= self.ctx.deadline {
+                self.ctx.stop.store(true, Ordering::Relaxed);
+                return true;
+            }
         }
         false
     }
 
-    fn dfs(&mut self, co: &Coords, depth: usize, n: usize) -> bool {
+    fn dfs(&mut self, s: &H::St, depth: usize, n: usize) -> bool {
         if self.should_stop() {
             return false;
         }
-        let h = h3(self.ctx, co) as usize;
-        if h > depth {
+        if self.ctx.heur.h(s) as usize > depth {
             return false;
         }
         if depth == 0 {
-            // h == 0 nos tres eixos nao garante resolvido (as permutacoes dentro
-            // de cada fatia ainda podem estar trocadas); confere de verdade.
+            // h == 0 nao garante resolvido (permutacoes de cantos/arestas U/D
+            // podem estar trocadas); confere de verdade.
             let mut c = self.ctx.root;
             for &m in &self.path[..n] {
                 c = c.multiply(&self.ctx.t.mc[m as usize]);
@@ -149,7 +272,7 @@ impl<'a, 'b> Dfs<'a, 'b> {
                     continue;
                 }
             }
-            let next = step(self.ctx, co, m);
+            let next = self.ctx.heur.step(s, m);
             self.path[n] = m;
             if self.dfs(&next, depth - 1, n + 1) {
                 return true;
@@ -162,20 +285,154 @@ impl<'a, 'b> Dfs<'a, 'b> {
     }
 }
 
-/// Pares (m1, m2) canonicos para dividir a raiz entre as threads.
-fn root_tasks() -> Vec<(u8, u8)> {
-    let mut tasks = Vec::with_capacity(270);
+/// Prefixos canonicos de 3 movimentos para dividir a raiz (~4050 subarvores;
+/// quanto mais finas, menos threads ociosas no fim de cada iteracao).
+fn root_tasks() -> Vec<[u8; 3]> {
+    let ok = |prev: u8, m: u8| {
+        let lf = move_face(prev);
+        let f = move_face(m);
+        f != lf && !(lf >= 3 && f + 3 == lf)
+    };
+    let mut tasks = Vec::with_capacity(4050);
     for m1 in 0..18u8 {
         for m2 in 0..18u8 {
-            let lf = move_face(m1);
-            let f = move_face(m2);
-            if f == lf || (lf >= 3 && f + 3 == lf) {
+            if !ok(m1, m2) {
                 continue;
             }
-            tasks.push((m1, m2));
+            for m3 in 0..18u8 {
+                if ok(m2, m3) {
+                    tasks.push([m1, m2, m3]);
+                }
+            }
         }
     }
     tasks
+}
+
+struct RunResult {
+    best: Vec<u8>,
+    lower_bound: usize,
+    optimal: bool,
+    nodes: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_proof<H: Heur>(
+    heur: &H,
+    t: &Tables,
+    cube: &CubieCube,
+    mut best: Vec<u8>,
+    deadline: Instant,
+    threads: usize,
+    ctrl: Option<&SolveCtrl>,
+) -> RunResult {
+    // d(c) = d(c^-1): busca na direcao com heuristica maior e usa o maximo
+    // dos dois como limite inferior inicial.
+    let inv = cube.inverse();
+    let st_c = heur.root(cube);
+    let st_i = heur.root(&inv);
+    let h_c = heur.h(&st_c);
+    let h_i = heur.h(&st_i);
+    let lb0 = h_c.max(h_i) as usize;
+    let inverted = h_i > h_c;
+    let (root_cube, root_st) = if inverted { (inv, st_i) } else { (*cube, st_c) };
+
+    if let Some(c) = ctrl {
+        c.lower_bound.store(lb0.min(best.len()), Ordering::Relaxed);
+    }
+
+    // Subarvores mais promissoras primeiro: a iteracao final acha a solucao
+    // mais cedo (nas iteracoes de prova a ordem nao importa).
+    let mut tasks = root_tasks();
+    tasks.sort_by_cached_key(|&[m1, m2, m3]| {
+        let s = heur.step(&heur.step(&heur.step(&root_st, m1), m2), m3);
+        heur.h(&s)
+    });
+
+    let mut completed = lb0.saturating_sub(1);
+    let mut total_nodes = 0usize;
+    let mut optimal = false;
+    let mut d = lb0;
+    while d < best.len() {
+        if Instant::now() >= deadline
+            || ctrl.map(|c| c.cancel.load(Ordering::Relaxed)).unwrap_or(false)
+        {
+            break;
+        }
+        if let Some(c) = ctrl {
+            c.lower_bound.store(d.min(best.len()), Ordering::Relaxed);
+        }
+        let ctx = Ctx {
+            heur,
+            t,
+            root: root_cube,
+            stop: AtomicBool::new(false),
+            deadline,
+            nodes: AtomicUsize::new(0),
+            cursor: AtomicUsize::new(0),
+            found: Mutex::new(None),
+            ctrl,
+        };
+
+        if d < 3 {
+            let mut w = Dfs { ctx: &ctx, path: [0; 24], counter: 0 };
+            w.dfs(&root_st, d, 0);
+            total_nodes += w.counter;
+        } else {
+            std::thread::scope(|sc| {
+                for _ in 0..threads {
+                    let ctx = &ctx;
+                    let tasks = &tasks;
+                    let root_st = &root_st;
+                    sc.spawn(move || {
+                        let mut w = Dfs { ctx, path: [0; 24], counter: 0 };
+                        loop {
+                            let i = ctx.cursor.fetch_add(1, Ordering::Relaxed);
+                            if i >= tasks.len() || ctx.stop.load(Ordering::Relaxed) {
+                                break;
+                            }
+                            let [m1, m2, m3] = tasks[i];
+                            let s = ctx.heur.step(
+                                &ctx.heur.step(&ctx.heur.step(root_st, m1), m2),
+                                m3,
+                            );
+                            w.path[0] = m1;
+                            w.path[1] = m2;
+                            w.path[2] = m3;
+                            if w.dfs(&s, d - 3, 3) {
+                                break;
+                            }
+                        }
+                        ctx.nodes.fetch_add(w.counter, Ordering::Relaxed);
+                    });
+                }
+            });
+            total_nodes += ctx.nodes.load(Ordering::Relaxed);
+        }
+
+        let found = ctx.found.lock().unwrap().take();
+        if let Some(mut mv) = found {
+            if inverted {
+                mv.reverse();
+                for m in mv.iter_mut() {
+                    *m = move_inverse(*m);
+                }
+            }
+            best = mv;
+            completed = d.saturating_sub(1);
+            optimal = true;
+            break;
+        }
+        if ctx.stop.load(Ordering::Relaxed) {
+            break; // tempo/cancelamento no meio da iteracao: nao conta como prova
+        }
+        completed = d;
+        d += 1;
+    }
+
+    let lower_bound = if optimal { best.len() } else { (completed + 1).min(best.len()) };
+    let optimal = optimal || lower_bound >= best.len();
+    RunResult { best, lower_bound, optimal, nodes: total_nodes }
 }
 
 /// Resolve com prova de otimalidade dentro do orcamento de tempo.
@@ -184,11 +441,11 @@ pub fn solve_optimal(
     t: &Tables,
     timeout_ms: u64,
     threads: usize,
+    ctrl: Option<&SolveCtrl>,
 ) -> Result<OptimalOutcome, String> {
-    let big = t
-        .big
-        .as_ref()
-        .ok_or_else(|| "o modo otimo precisa da tabela de simetria (sem --no-bigtable)".to_string())?;
+    if t.big.is_none() && t.bigx.is_none() {
+        return Err("o modo otimo precisa das tabelas de simetria (sem --no-bigtable)".into());
+    }
     if cube.is_solved() {
         return Ok(OptimalOutcome {
             moves: Vec::new(),
@@ -207,132 +464,30 @@ pub fn solve_optimal(
     let two = search::solve(
         cube,
         t,
-        SolveParams {
-            max_len: 20,
-            target_len: 0,
-            timeout_ms: ub_budget,
-            min_ms: 0,
-            threads,
-        },
+        SolveParams { max_len: 20, target_len: 0, timeout_ms: ub_budget, min_ms: 0, threads },
     )?;
-    let mut best = two.moves;
-
-    // Limite inferior inicial: d(c) = d(c^-1), entao vale o maximo dos dois.
-    let axis_moves = axis_move_table();
-    let inv = cube.inverse();
-    let coords_c = Coords { a: coords_of(cube) };
-    let coords_i = Coords { a: coords_of(&inv) };
-    let probe = Ctx {
-        t,
-        big,
-        axis_moves,
-        root: *cube,
-        stop: AtomicBool::new(false),
-        deadline,
-        nodes: AtomicUsize::new(0),
-        cursor: AtomicUsize::new(0),
-        found: Mutex::new(None),
-    };
-    let h_c = h3(&probe, &coords_c);
-    let h_i = h3(&probe, &coords_i);
-    let lb0 = h_c.max(h_i) as usize;
-
-    // Busca na direcao com heuristica maior (poda melhor).
-    let inverted = h_i > h_c;
-    let (root_cube, root_coords) = if inverted { (inv, coords_i) } else { (*cube, coords_c) };
-
-    // Subarvores mais promissoras primeiro: nas iteracoes de prova a ordem nao
-    // importa (todas precisam terminar), mas na iteracao final a solucao
-    // aparece mais cedo.
-    let mut tasks = root_tasks();
-    tasks.sort_by_cached_key(|&(m1, m2)| {
-        let c1 = step(&probe, &root_coords, m1);
-        let c2 = step(&probe, &c1, m2);
-        h3(&probe, &c2)
-    });
-    let mut completed = lb0.saturating_sub(1); // profundidades < lb0 provadas vazias
-    let mut total_nodes = 0usize;
-    let mut optimal = false;
-
-    let mut d = lb0;
-    while d < best.len() {
-        if Instant::now() >= deadline {
-            break;
-        }
-        let ctx = Ctx {
-            t,
-            big,
-            axis_moves,
-            root: root_cube,
-            stop: AtomicBool::new(false),
-            deadline,
-            nodes: AtomicUsize::new(0),
-            cursor: AtomicUsize::new(0),
-            found: Mutex::new(None),
-        };
-
-        if d < 2 {
-            // profundidades triviais: uma thread da conta
-            let mut w = Dfs { ctx: &ctx, path: [0; 24], counter: 0 };
-            w.dfs(&root_coords, d, 0);
-            total_nodes += w.counter;
-        } else {
-            std::thread::scope(|sc| {
-                for _ in 0..threads {
-                    let ctx = &ctx;
-                    let tasks = &tasks;
-                    let root_coords = &root_coords;
-                    sc.spawn(move || {
-                        let mut w = Dfs { ctx, path: [0; 24], counter: 0 };
-                        loop {
-                            let i = ctx.cursor.fetch_add(1, Ordering::Relaxed);
-                            if i >= tasks.len() || ctx.stop.load(Ordering::Relaxed) {
-                                break;
-                            }
-                            let (m1, m2) = tasks[i];
-                            let c1 = step(ctx, root_coords, m1);
-                            let c2 = step(ctx, &c1, m2);
-                            w.path[0] = m1;
-                            w.path[1] = m2;
-                            if w.dfs(&c2, d - 2, 2) {
-                                break;
-                            }
-                        }
-                        ctx.nodes.fetch_add(w.counter, Ordering::Relaxed);
-                    });
-                }
-            });
-            total_nodes += ctx.nodes.load(Ordering::Relaxed);
-        }
-
-        let found = ctx.found.lock().unwrap().take();
-        if let Some(mut mv) = found {
-            // solucao com exatamente d movimentos; profundidades menores ja
-            // foram provadas vazias -> otima
-            if inverted {
-                mv.reverse();
-                for m in mv.iter_mut() {
-                    *m = move_inverse(*m);
-                }
-            }
-            best = mv;
-            completed = d.saturating_sub(1);
-            optimal = true;
-            break;
-        }
-        if ctx.stop.load(Ordering::Relaxed) {
-            break; // tempo esgotado no meio da iteracao: ela nao conta como prova
-        }
-        completed = d;
-        d += 1;
+    if let Some(c) = ctrl {
+        c.best_len.store(two.moves.len(), Ordering::Relaxed);
+        c.nodes.fetch_add(two.nodes, Ordering::Relaxed);
     }
 
-    let lower_bound = if optimal { best.len() } else { (completed + 1).min(best.len()) };
-    let optimal = optimal || lower_bound >= best.len();
+    let am = axis_move_table();
+    let r = if let Some(x) = &t.bigx {
+        let heur = XHeur { t, x, am };
+        run_proof(&heur, t, cube, two.moves, deadline, threads, ctrl)
+    } else {
+        let heur = P1Heur { t, big: t.big.as_ref().unwrap(), am };
+        run_proof(&heur, t, cube, two.moves, deadline, threads, ctrl)
+    };
+
+    if let Some(c) = ctrl {
+        c.best_len.store(r.best.len(), Ordering::Relaxed);
+        c.lower_bound.store(r.lower_bound, Ordering::Relaxed);
+    }
 
     // Rede de seguranca
     let mut c = *cube;
-    for &m in &best {
+    for &m in &r.best {
         c = c.multiply(&t.mc[m as usize]);
     }
     if !c.is_solved() {
@@ -340,10 +495,10 @@ pub fn solve_optimal(
     }
 
     Ok(OptimalOutcome {
-        moves: best,
-        lower_bound,
-        optimal,
-        nodes: total_nodes + two.nodes,
+        moves: r.best,
+        lower_bound: r.lower_bound,
+        optimal: r.optimal,
+        nodes: r.nodes + two.nodes,
         threads,
     })
 }
