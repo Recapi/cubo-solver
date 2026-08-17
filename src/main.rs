@@ -431,19 +431,30 @@ async fn main() {
     if no_big {
         println!("Tabela de simetria da fase 1 desligada (--no-bigtable).");
     } else {
-        let cache = std::env::current_exe()
-            .ok()
-            .and_then(|p| p.parent().map(|d| d.join("p1sym.cache")));
-        let cached = cache.as_deref().map(|p| p.exists()).unwrap_or(false);
-        if cached {
+        let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        let cache1 = exe_dir.as_ref().map(|d| d.join("p1sym.cache"));
+        let cached1 = cache1.as_deref().map(|p| p.exists()).unwrap_or(false);
+        if cached1 {
             print!("Carregando tabela de simetria da fase 1 (~140 MB)... ");
         } else {
             println!("Gerando tabela de simetria da fase 1 (~140 MB, so na primeira vez):");
         }
         let _ = std::io::stdout().flush();
         let t1 = Instant::now();
-        tables.big = Some(sym::BigP1::load_or_build(&tables, cache.as_deref(), !cached));
+        tables.big = Some(sym::BigP1::load_or_build(&tables, cache1.as_deref(), !cached1));
         println!("pronto em {:.1} s", t1.elapsed().as_secs_f64());
+
+        let cache2 = exe_dir.as_ref().map(|d| d.join("p2sym.cache"));
+        let cached2 = cache2.as_deref().map(|p| p.exists()).unwrap_or(false);
+        if cached2 {
+            print!("Carregando tabela de simetria da fase 2 (~112 MB)... ");
+        } else {
+            println!("Gerando tabela de simetria da fase 2 (~112 MB, so na primeira vez):");
+        }
+        let _ = std::io::stdout().flush();
+        let t2 = Instant::now();
+        tables.big2 = Some(sym::BigP2::load_or_build(&tables, cache2.as_deref(), !cached2));
+        println!("pronto em {:.1} s", t2.elapsed().as_secs_f64());
     }
     let tables = Arc::new(tables);
 
@@ -900,6 +911,77 @@ mod tests {
         assert!(o.lower_bound >= 8, "limite inferior {} suspeito", o.lower_bound);
         if o.optimal {
             assert_eq!(o.lower_bound, o.moves.len());
+        }
+    }
+
+    #[test]
+    fn conjugacao_de_cantos_bate_com_planificacao() {
+        let syms = sym::symmetries();
+        let cs: Vec<[u8; 8]> = syms.iter().map(sym::corner_perm_of).collect();
+        let ci: Vec<[u8; 8]> = cs.iter().map(sym::perm8_inverse).collect();
+        let mut rng = Rng::new();
+        for _ in 0..30 {
+            // permutacao PAR de cantos (arestas na identidade mantem a paridade)
+            let mut c = SOLVED;
+            for i in (1..8).rev() {
+                let j = rng.below(i as u64 + 1) as usize;
+                c.cp.swap(i, j);
+            }
+            if cube::perm_parity(&c.cp) == 1 {
+                c.cp.swap(0, 1);
+            }
+            for s in 0..16 {
+                let via_facelets = sym::conj_state(&c, &syms[s]);
+                let via_indices = sym::cperm_conj(&c.cp, &cs[s], &ci[s]);
+                assert_eq!(via_facelets.cp, via_indices, "cperm difere na simetria {s}");
+            }
+        }
+    }
+
+    #[test]
+    fn tabela_p2_e_consistente() {
+        let mut tables = Tables::build();
+        let big2 = sym::BigP2::load_or_build(&tables, None, false);
+
+        // completa (paridade nao restringe o par cperm x uperm) e maximo conhecido
+        assert!(big2.dist.iter().all(|&v| v != 255), "estado inalcancavel");
+        let max = big2.dist.iter().copied().max().unwrap();
+        assert!(max <= 18, "distancia maxima {max} (esperado <= 18)");
+
+        // identidade = 0; qualquer movimento de G1 mexe em cantos ou arestas U/D
+        assert_eq!(big2.h2(0, 0), 0);
+        for &m in &cube::P2_MOVES {
+            let c = SOLVED.multiply(&tables.mc[m as usize]);
+            assert_eq!(big2.h2(get_cperm(&c.cp), get_uperm(&c.ep)), 1, "movimento {m}");
+        }
+
+        let mut rng = Rng::new();
+        for _ in 0..200 {
+            // estado de G1 com k movimentos: h2 admissivel (<= k) e consistente
+            let k = 1 + rng.below(14) as usize;
+            let mut c = SOLVED;
+            for _ in 0..k {
+                let m = cube::P2_MOVES[rng.below(10) as usize];
+                c = c.multiply(&tables.mc[m as usize]);
+            }
+            let h = big2.h2(get_cperm(&c.cp), get_uperm(&c.ep));
+            assert!(h as usize <= k, "h2 = {h} para estado a {k} movimentos");
+            for &m in &cube::P2_MOVES {
+                let d = c.multiply(&tables.mc[m as usize]);
+                let h2 = big2.h2(get_cperm(&d.cp), get_uperm(&d.ep));
+                assert!((h as i32 - h2 as i32).abs() <= 1, "vizinhos {h} e {h2}");
+            }
+        }
+
+        // e o solver continua correto com a tabela ligada
+        tables.big2 = Some(big2);
+        for i in 0..8 {
+            let scr = random_scramble(&mut rng, 25);
+            let cube = apply_moves(&SOLVED, &scr, &tables);
+            let sol = search::solve(&cube, &tables, test_params(2000))
+                .unwrap_or_else(|e| panic!("caso {i}: {e}"));
+            assert!(apply_moves(&cube, &sol.moves, &tables).is_solved());
+            assert!(sol.moves.len() <= 20);
         }
     }
 

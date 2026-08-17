@@ -386,8 +386,12 @@
     }
     var btn = $("btn-solve");
     btn.disabled = true;
-    btn.textContent =
-      $("mode").value === "optimal" ? "Provando... (pode demorar)" : "Resolvendo...";
+    var rotulo = $("mode").value === "optimal" ? "Provando" : "Resolvendo";
+    btn.textContent = rotulo + "...";
+    var t0 = Date.now();
+    var tick = setInterval(function () {
+      btn.textContent = rotulo + "... " + Math.round((Date.now() - t0) / 1000) + "s";
+    }, 1000);
     resetSolution();
     refresh();
     say("");
@@ -404,6 +408,7 @@
         say(e.message, "err");
       })
       .finally(function () {
+        clearInterval(tick);
         btn.disabled = false;
         btn.textContent = "Resolver";
       });

@@ -241,7 +241,15 @@ pub fn solve_optimal(
     let inverted = h_i > h_c;
     let (root_cube, root_coords) = if inverted { (inv, coords_i) } else { (*cube, coords_c) };
 
-    let tasks = root_tasks();
+    // Subarvores mais promissoras primeiro: nas iteracoes de prova a ordem nao
+    // importa (todas precisam terminar), mas na iteracao final a solucao
+    // aparece mais cedo.
+    let mut tasks = root_tasks();
+    tasks.sort_by_cached_key(|&(m1, m2)| {
+        let c1 = step(&probe, &root_coords, m1);
+        let c2 = step(&probe, &c1, m2);
+        h3(&probe, &c2)
+    });
     let mut completed = lb0.saturating_sub(1); // profundidades < lb0 provadas vazias
     let mut total_nodes = 0usize;
     let mut optimal = false;

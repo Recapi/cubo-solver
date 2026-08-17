@@ -68,12 +68,19 @@ cantos, uma tabela de 64.430 × 2187 ≈ **140 MB** guarda a distância **exata*
 fase 1 de qualquer um dos 2,2 bilhões de estados — a heurística deixa de
 subestimar e o IDA\* quase não visita nó fora do caminho (11× menos nós).
 
-Detalhes de implementação: a conjugação de cantos é feita no nível da
+A **fase 2** tem a sua própria tabela de simetria: as 40.320 permutações de canto
+reduzem a **2.768 classes**; cruzando com as arestas U/D, 2.768 × 40.320 ≈
+**112 MB** guardam a distância mínima (com os 10 movimentos de G1) para resolver
+cantos + arestas U/D ignorando a fatia — limite inferior quase exato da fase 2,
+usado como terceiro componente do `prun2`. Aqui a conjugação é só de
+permutações (troca de índices), então o espelho não complica nada.
+
+Detalhes de implementação da fase 1: a conjugação de cantos é feita no nível da
 planificação (imune à aritmética de orientação espelhada, fonte clássica de bug)
 e a de arestas por multiplicação direta (mod 2 não sofre com espelho). A geração
-leva ~1,3 s na primeira execução e fica em cache (`p1sym.cache`, ao lado do
-executável); depois carrega em ~0,2 s. `--no-bigtable` ou `NO_BIGTABLE=1`
-desligam a tabela em máquinas com pouca RAM.
+das duas tabelas leva ~2,3 s na primeira execução e fica em cache (`p1sym.cache`
+e `p2sym.cache`, ao lado do executável); depois carrega em ~0,4 s. `--no-bigtable`
+ou `NO_BIGTABLE=1` desligam as duas em máquinas com pouca RAM (~250 MB no total).
 
 Um detalhe que importa muito: **não basta parar a fase 1 em 12 movimentos** (a
 distância máxima até G1). Uma fase 1 mais longa costuma deixar o cubo numa posição
@@ -87,8 +94,10 @@ limite inferior da distância real). O two-phase entra primeiro como limite
 superior; cada iteração do IDA\* que termina vazia prova "não existe solução com
 d movimentos". Quando a prova alcança o tamanho da melhor solução, ela é
 **provadamente ótima**. A busca ainda escolhe atacar o cubo ou o seu inverso
-(o que tiver heurística maior — d(c) = d(c⁻¹)) e divide as raízes da árvore
-entre as threads. Com o tempo esgotado, o resultado informa o limite provado.
+(o que tiver heurística maior — d(c) = d(c⁻¹)), divide a raiz em 270 subárvores
+entre as threads e as ordena por heurística crescente, para a iteração final
+encontrar a solução mais cedo. Com o tempo esgotado, o resultado informa o
+limite provado.
 
 ### Paralelismo
 
@@ -114,8 +123,9 @@ Cubos aleatórios, 12 threads, com a tabela de simetria:
 | modo | média | máximo | tempo |
 |---|---|---|---|
 | rápido (primeira ≤ 20) | 19,81 | 20 | **0,2 ms** |
-| equilibrado (60 ms encurtando) | **18,48** | 20 | ~60 ms |
-| melhor solução (5 s, alvo 15) | **18,20** | 19 | 5 s |
+| equilibrado (60 ms encurtando) | **18,5** | 20 | ~60 ms |
+| melhor solução (5 s, alvo 15) | **18,05** | 19 | 5 s |
+| ótimo (com prova) | 17-18 | — | segundos a minutos |
 
 O esforço mínimo do modo equilibrado existe para a busca não parar na primeira
 solução: um cubo a 3 movimentos do fim receberia uma "solução" de 20 movimentos —

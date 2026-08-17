@@ -2,11 +2,13 @@
 
 use crate::coord::*;
 use crate::cube::*;
-use crate::sym::BigP1;
+use crate::sym::{BigP1, BigP2};
 
 pub struct Tables {
     /// Tabela grande da fase 1 (distancia exata, ~140 MB), quando habilitada.
     pub big: Option<BigP1>,
+    /// Tabela grande da fase 2 (cantos x arestas U/D, ~112 MB), quando habilitada.
+    pub big2: Option<BigP2>,
 
     pub mc: [CubieCube; N_MOVES],
 
@@ -42,11 +44,12 @@ impl Tables {
     pub fn prun2(&self, cperm: u16, uperm: u16, sperm: u8) -> u8 {
         let a = self.prun_cperm[cperm as usize * N_SPERM + sperm as usize];
         let b = self.prun_uperm[uperm as usize * N_SPERM + sperm as usize];
-        if a > b {
-            a
-        } else {
-            b
+        let mut h = if a > b { a } else { b };
+        if let Some(big2) = &self.big2 {
+            // quase exata em cantos x arestas U/D; as duas acima cobrem a fatia
+            h = h.max(big2.h2(cperm, uperm));
         }
+        h
     }
 
     pub fn build() -> Tables {
@@ -129,6 +132,7 @@ impl Tables {
 
         Tables {
             big: None,
+            big2: None,
             mc,
             twist_move,
             flip_move,

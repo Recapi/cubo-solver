@@ -16,14 +16,15 @@
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use crate::coord::*;
-use crate::cube::{CubieCube, SOLVED};
-use crate::facelet::{rotation_perm, to_cubie, to_facelets, EDGE_FACELET, FACE_CHARS};
+use crate::cube::{CubieCube, N_P2_MOVES, SOLVED};
+use crate::facelet::{rotation_perm, to_cubie, to_facelets, CORNER_FACELET, EDGE_FACELET, FACE_CHARS};
 use crate::tables::Tables;
 
 pub const N_SYM: usize = 16;
 pub const N_RAW: usize = N_SLICE * N_FLIP; // 1.013.760
 pub const N_CLASS: usize = 64430;
-const CACHE_MAGIC: &[u8; 4] = b"CUB1";
+/// Classes das 40320 permutacoes de canto sob as 16 simetrias.
+pub const N_CLASS2: usize = 2768;
 const CACHE_VERSION: u32 = 1;
 
 fn workers() -> usize {
@@ -236,14 +237,14 @@ impl BigP1 {
     /// Constroi tudo, usando (ou criando) o cache de distancias em `cache`.
     pub fn load_or_build(t: &Tables, cache: Option<&std::path::Path>, verbose: bool) -> BigP1 {
         let mut big = Self::build_sym_tables();
-        if let Some(dist) = cache.and_then(read_cache) {
+        if let Some(dist) = cache.and_then(|p| read_cache(p, b"CUB1", N_CLASS * N_TWIST)) {
             big.dist = dist;
             return big;
         }
         let fus_move = big.build_fus_move(t);
         big.dist = build_dist(t, &big.twist_conj, &fus_move, &big.stab, verbose);
         if let Some(path) = cache {
-            if let Err(e) = write_cache(path, &big.dist) {
+            if let Err(e) = write_cache(path, b"CUB1", &big.dist) {
                 eprintln!("aviso: nao consegui salvar o cache em {}: {e}", path.display());
             }
         }
@@ -507,10 +508,9 @@ fn build_dist(
 // Cache em disco (so a tabela de distancias; o resto reconstroi em ~1 s)
 // ---------------------------------------------------------------------------
 
-fn read_cache(path: &std::path::Path) -> Option<Vec<u8>> {
+fn read_cache(path: &std::path::Path, magic: &[u8; 4], n: usize) -> Option<Vec<u8>> {
     let data = std::fs::read(path).ok()?;
-    let n = N_CLASS * N_TWIST;
-    if data.len() != 8 + n || &data[0..4] != CACHE_MAGIC {
+    if data.len() != 8 + n || &data[0..4] != magic {
         return None;
     }
     let ver = u32::from_le_bytes(data[4..8].try_into().unwrap());
@@ -522,10 +522,264 @@ fn read_cache(path: &std::path::Path) -> Option<Vec<u8>> {
     Some(dist)
 }
 
-fn write_cache(path: &std::path::Path, dist: &[u8]) -> std::io::Result<()> {
+fn write_cache(path: &std::path::Path, magic: &[u8; 4], dist: &[u8]) -> std::io::Result<()> {
     let mut data = Vec::with_capacity(8 + dist.len());
-    data.extend_from_slice(CACHE_MAGIC);
+    data.extend_from_slice(magic);
     data.extend_from_slice(&CACHE_VERSION.to_le_bytes());
     data.extend_from_slice(dist);
     std::fs::write(path, data)
 }
+
+// ---------------------------------------------------------------------------
+// Tabela grande da fase 2: permutacao dos cantos (2768 classes) x arestas U/D
+//
+// Distancia minima, com os 10 movimentos de G1, para resolver cantos + arestas
+// U/D *ignorando* a permutacao da fatia — limite inferior forte (quase exato)
+// da fase 2. So permutacoes: a conjugacao e uma troca de indices, sem nenhuma
+// aritmetica de orientacao (o espelho nao incomoda).
+// ---------------------------------------------------------------------------
+
+/// Acao da simetria sobre os 8 encaixes de canto (ignora orientacao):
+/// cp[k] = j significa que o conteudo do encaixe j vai para o encaixe k.
+pub fn corner_perm_of(x: &SymXform) -> [u8; 8] {
+    let mut cp = [0u8; 8];
+    for j in 0..8 {
+        let mut set: [usize; 3] = [0; 3];
+        for (i, &p) in CORNER_FACELET[j].iter().enumerate() {
+            set[i] = x.perm[p];
+        }
+        set.sort_unstable();
+        let mut found = false;
+        for k in 0..8 {
+            let mut tgt = CORNER_FACELET[k];
+            tgt.sort_unstable();
+            if tgt == set {
+                cp[k] = j as u8;
+                found = true;
+                break;
+            }
+        }
+        debug_assert!(found, "simetria nao mapeia canto {j} em canto");
+    }
+    cp
+}
+
+fn perm8_mult(a: &[u8; 8], b: &[u8; 8]) -> [u8; 8] {
+    let mut r = [0u8; 8];
+    for i in 0..8 {
+        r[i] = a[b[i] as usize];
+    }
+    r
+}
+
+pub fn perm8_inverse(a: &[u8; 8]) -> [u8; 8] {
+    let mut r = [0u8; 8];
+    for i in 0..8 {
+        r[a[i] as usize] = i as u8;
+    }
+    r
+}
+
+/// Conjugacao s^-1 * c * s de uma permutacao de cantos.
+pub fn cperm_conj(cp: &[u8; 8], s: &[u8; 8], s_inv: &[u8; 8]) -> [u8; 8] {
+    perm8_mult(&perm8_mult(s_inv, cp), s)
+}
+
+pub struct BigP2 {
+    /// cperm_rts[cperm] = (classe << 4) | s, onde conjugar por s da o representante.
+    pub cperm_rts: Vec<u32>,
+    /// class_rep[classe] = coordenada cperm do representante.
+    pub class_rep: Vec<u16>,
+    /// stab[classe] = simetrias que fixam o representante.
+    pub stab: Vec<u16>,
+    /// uperm_conj[uperm * 16 + s] = coordenada uperm conjugada por s.
+    pub uperm_conj: Vec<u16>,
+    /// dist[classe * 40320 + uperm], distancia com os 10 movimentos de G1.
+    pub dist: Vec<u8>,
+}
+
+impl BigP2 {
+    /// Limite inferior da fase 2 para (cperm, uperm), ignorando a fatia.
+    #[inline(always)]
+    pub fn h2(&self, cperm: u16, uperm: u16) -> u8 {
+        let cs = self.cperm_rts[cperm as usize] as usize;
+        let u = self.uperm_conj[(uperm as usize) * N_SYM + (cs & 15)] as usize;
+        self.dist[(cs >> 4) * N_UPERM + u]
+    }
+
+    pub fn load_or_build(t: &Tables, cache: Option<&std::path::Path>, verbose: bool) -> BigP2 {
+        let mut big = Self::build_sym_tables();
+        if let Some(dist) = cache.and_then(|p| read_cache(p, b"CUB2", N_CLASS2 * N_UPERM)) {
+            big.dist = dist;
+            return big;
+        }
+        big.dist = build_dist2(t, &big, verbose);
+        if let Some(path) = cache {
+            if let Err(e) = write_cache(path, b"CUB2", &big.dist) {
+                eprintln!("aviso: nao consegui salvar o cache em {}: {e}", path.display());
+            }
+        }
+        big
+    }
+
+    pub fn build_sym_tables() -> BigP2 {
+        let syms = symmetries();
+        let corner_syms: Vec<[u8; 8]> = syms.iter().map(corner_perm_of).collect();
+        let corner_invs: Vec<[u8; 8]> = corner_syms.iter().map(perm8_inverse).collect();
+        let edge_syms: Vec<EdgeCube> = syms.iter().map(edge_cube_of).collect();
+        let edge_invs: Vec<EdgeCube> = edge_syms.iter().map(edge_inverse).collect();
+
+        // Classes das permutacoes de canto.
+        let mut cperm_rts = vec![0u32; N_CPERM];
+        let mut class_rep: Vec<u16> = Vec::with_capacity(N_CLASS2);
+        let mut rep_class = vec![u32::MAX; N_CPERM];
+        let mut min_of = vec![(0u16, 0u8); N_CPERM];
+        let mut cp = [0u8; 8];
+        for i in 0..N_CPERM {
+            perm_from_index(i as u32, 8, &mut cp);
+            let mut best = u16::MAX;
+            let mut bs = 0u8;
+            for s in 0..N_SYM {
+                let c2 = cperm_conj(&cp, &corner_syms[s], &corner_invs[s]);
+                let r2 = perm_index(&c2) as u16;
+                if r2 < best {
+                    best = r2;
+                    bs = s as u8;
+                }
+            }
+            min_of[i] = (best, bs);
+        }
+        for i in 0..N_CPERM {
+            let rep = min_of[i].0 as usize;
+            if rep == i && rep_class[rep] == u32::MAX {
+                rep_class[rep] = class_rep.len() as u32;
+                class_rep.push(rep as u16);
+            }
+        }
+        for i in 0..N_CPERM {
+            let (rep, s) = min_of[i];
+            cperm_rts[i] = (rep_class[rep as usize] << 4) | s as u32;
+        }
+        assert_eq!(
+            class_rep.len(),
+            N_CLASS2,
+            "contagem de classes de cperm inesperada - simetrias erradas?"
+        );
+
+        let mut stab = vec![0u16; N_CLASS2];
+        for (ci, &rep) in class_rep.iter().enumerate() {
+            perm_from_index(rep as u32, 8, &mut cp);
+            let mut mask = 0u16;
+            for s in 0..N_SYM {
+                let c2 = cperm_conj(&cp, &corner_syms[s], &corner_invs[s]);
+                if perm_index(&c2) as u16 == rep {
+                    mask |= 1 << s;
+                }
+            }
+            stab[ci] = mask;
+        }
+
+        // Conjugacao da permutacao das arestas U/D (a fatia fica parada).
+        let mut uperm_conj = vec![0u16; N_UPERM * N_SYM];
+        let mut p8 = [0u8; 8];
+        for u in 0..N_UPERM {
+            perm_from_index(u as u32, 8, &mut p8);
+            let mut e = EDGE_ID;
+            e.ep[0..8].copy_from_slice(&p8);
+            for s in 0..N_SYM {
+                let c2 = edge_conj(&e, &edge_syms[s], &edge_invs[s]);
+                let mut q = [0u8; 8];
+                q.copy_from_slice(&c2.ep[0..8]);
+                uperm_conj[u * N_SYM + s] = perm_index(&q) as u16;
+            }
+        }
+
+        BigP2 { cperm_rts, class_rep, stab, uperm_conj, dist: Vec::new() }
+    }
+}
+
+fn build_dist2(t: &Tables, big: &BigP2, verbose: bool) -> Vec<u8> {
+    // Movimento sobre classes: (classe' << 4) | s' para cada um dos 10 movimentos.
+    let mut cmove = vec![0u32; N_CLASS2 * N_P2_MOVES];
+    for (ci, &rep) in big.class_rep.iter().enumerate() {
+        for j in 0..N_P2_MOVES {
+            let c2 = t.cperm_move[rep as usize * N_P2_MOVES + j] as usize;
+            cmove[ci * N_P2_MOVES + j] = big.cperm_rts[c2];
+        }
+    }
+
+    let n = N_CLASS2 * N_UPERM;
+    let dist = as_atomic(vec![255u8; n]);
+    dist[0].store(0, Ordering::Relaxed);
+
+    let mut depth = 0u8;
+    loop {
+        let found = AtomicUsize::new(0);
+        let next = AtomicUsize::new(0);
+        let chunk = 8 * N_UPERM; // blocos de 8 classes
+        std::thread::scope(|sc| {
+            for _ in 0..workers() {
+                let dist = &dist;
+                let found = &found;
+                let next = &next;
+                let cmove = &cmove;
+                sc.spawn(move || {
+                    let mut local = 0usize;
+                    loop {
+                        let start = next.fetch_add(chunk, Ordering::Relaxed);
+                        if start >= n {
+                            break;
+                        }
+                        let end = (start + chunk).min(n);
+                        for idx in start..end {
+                            if dist[idx].load(Ordering::Relaxed) != depth {
+                                continue;
+                            }
+                            let class = idx / N_UPERM;
+                            let uperm = idx % N_UPERM;
+                            for j in 0..N_P2_MOVES {
+                                let cs = cmove[class * N_P2_MOVES + j] as usize;
+                                let c2 = cs >> 4;
+                                let s2 = cs & 15;
+                                let um = t.uperm_move[uperm * N_P2_MOVES + j] as usize;
+                                let u2 = big.uperm_conj[um * N_SYM + s2] as usize;
+                                let k = c2 * N_UPERM + u2;
+                                if dist[k].load(Ordering::Relaxed) == 255 {
+                                    dist[k].store(depth + 1, Ordering::Relaxed);
+                                    local += 1;
+                                    let mask = big.stab[c2];
+                                    if mask != 1 {
+                                        for s in 1..N_SYM {
+                                            if mask & (1 << s) != 0 {
+                                                let us =
+                                                    big.uperm_conj[u2 * N_SYM + s] as usize;
+                                                let ks = c2 * N_UPERM + us;
+                                                if dist[ks].load(Ordering::Relaxed) == 255 {
+                                                    dist[ks].store(depth + 1, Ordering::Relaxed);
+                                                    local += 1;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    found.fetch_add(local, Ordering::Relaxed);
+                });
+            }
+        });
+        let new_states = found.load(Ordering::Relaxed);
+        if verbose {
+            println!("    fase 2, profundidade {:2}: {new_states} estados novos", depth + 1);
+        }
+        if new_states == 0 {
+            break;
+        }
+        depth += 1;
+        assert!(depth <= 20, "BFS da fase 2 passou da profundidade esperada");
+    }
+    as_plain(dist)
+}
+
+
