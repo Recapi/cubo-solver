@@ -236,7 +236,7 @@ select {
 .mv.stg-2 { border-bottom: 2px solid #a371f7; }
 .mv.stg-3 { border-bottom: 2px solid #58a6ff; }
 
-.cfop-row { border-top: 1px solid var(--line); padding-top: 12px; }
+.grip-row { border-top: 1px solid var(--line); padding-top: 12px; }
 
 .player { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .player.hidden { display: none; }

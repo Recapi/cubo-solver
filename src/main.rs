@@ -141,6 +141,12 @@ struct SolveReq {
     /// true = modo otimo: prova que nao existe solucao menor (pode demorar).
     #[serde(default)]
     optimal: Option<bool>,
+    /// Pegada: cor que vai para BAIXO (letra U..B). Ausente = como pintado.
+    #[serde(default)]
+    base: Option<String>,
+    /// Pegada: cor que fica na FRENTE. Ausente = como pintado.
+    #[serde(default)]
+    front: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -160,7 +166,34 @@ struct SolveResp {
     /// So no modo otimo: provado que nao existe solucao com menos que isto.
     #[serde(skip_serializing_if = "Option::is_none")]
     lower_bound: Option<usize>,
+    /// Instrucao de pegada, quando o estado foi reorientado.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hold: Option<String>,
     states: Vec<String>,
+}
+
+/// Aplica a pegada (base/front opcionais) e devolve o cubo (reorientado ou
+/// nao) mais a instrucao de como segurar.
+fn apply_grip(
+    cube: &CubieCube,
+    base: Option<&str>,
+    front: Option<&str>,
+) -> Result<(CubieCube, Option<String>), String> {
+    if base.is_none() && front.is_none() {
+        return Ok((*cube, None));
+    }
+    let b = face_letter_of(base, 3)?; // sem base explicita: mantem a de baixo
+    // frente automatica: verde, a menos que a base seja verde/azul (usa branca)
+    let f = face_letter_of(front, if b == 2 || b == 5 { 0 } else { 2 })?;
+    let cores = ["branca", "vermelha", "verde", "amarela", "laranja", "azul"];
+    let rotated = cfop::orient_to_grip(cube, b, f)?;
+    Ok((
+        rotated,
+        Some(format!(
+            "Segure o cubo com a cor {} embaixo e a {} na frente.",
+            cores[b], cores[f]
+        )),
+    ))
 }
 
 #[derive(Deserialize)]
@@ -209,6 +242,7 @@ fn build_solve_resp(
     threads: usize,
     optimal: Option<bool>,
     lower_bound: Option<usize>,
+    hold: Option<String>,
     time_ms: u128,
 ) -> SolveResp {
     let mut states = Vec::with_capacity(moves.len() + 1);
@@ -230,6 +264,7 @@ fn build_solve_resp(
         threads,
         optimal,
         lower_bound,
+        hold,
         solution: names,
         states,
     }
@@ -258,7 +293,9 @@ async fn api_solve(
     Json(req): Json<SolveReq>,
 ) -> Result<Json<SolveResp>, ApiError> {
     let t = st.tables;
-    let cube = facelet::to_cubie(&req.facelets).map_err(bad_request)?;
+    let cube0 = facelet::to_cubie(&req.facelets).map_err(bad_request)?;
+    let (cube, hold) =
+        apply_grip(&cube0, req.base.as_deref(), req.front.as_deref()).map_err(bad_request)?;
     let max_len = req.max_len.unwrap_or(20).clamp(1, 30);
     let want_optimal = req.optimal.unwrap_or(false);
     let params = search::SolveParams {
@@ -286,6 +323,7 @@ async fn api_solve(
                     o.threads,
                     Some(o.optimal),
                     Some(o.lower_bound),
+                    hold.clone(),
                     start.elapsed().as_millis(),
                 )
             })
@@ -301,6 +339,7 @@ async fn api_solve(
                     s.threads,
                     None,
                     None,
+                    hold.clone(),
                     start.elapsed().as_millis(),
                 )
             })
@@ -323,13 +362,19 @@ struct OptStartReq {
     timeout_ms: Option<u64>,
     #[serde(default)]
     threads: Option<usize>,
+    #[serde(default)]
+    base: Option<String>,
+    #[serde(default)]
+    front: Option<String>,
 }
 
 async fn api_opt_start(
     State(st): State<AppState>,
     Json(req): Json<OptStartReq>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
-    let cube = facelet::to_cubie(&req.facelets).map_err(bad_request)?;
+    let cube0 = facelet::to_cubie(&req.facelets).map_err(bad_request)?;
+    let (cube, hold) =
+        apply_grip(&cube0, req.base.as_deref(), req.front.as_deref()).map_err(bad_request)?;
     let timeout_ms = req.timeout_ms.unwrap_or(60_000).clamp(500, 600_000);
     let threads = req.threads.unwrap_or_else(search::default_threads).clamp(1, 12);
 
@@ -366,6 +411,7 @@ async fn api_opt_start(
                     o.threads,
                     Some(o.optimal),
                     Some(o.lower_bound),
+                    hold.clone(),
                     start.elapsed().as_millis(),
                 )
             });
@@ -586,6 +632,7 @@ struct CfopResp {
 fn face_letter_of(s: Option<&str>, default: usize) -> Result<usize, String> {
     match s {
         None => Ok(default),
+        Some(v) if v.trim().is_empty() => Ok(default),
         Some(v) => {
             let c = v.trim().to_uppercase().chars().next().ok_or("cor vazia")?;
             "URFDLB"
@@ -603,7 +650,11 @@ async fn api_cfop(
     let t = st.tables;
     let cube = facelet::to_cubie(&req.facelets).map_err(bad_request)?;
     let base = face_letter_of(req.base.as_deref(), 0).map_err(bad_request)?; // U = branca
-    let front = face_letter_of(req.front.as_deref(), 2).map_err(bad_request)?; // F = verde
+    let front = face_letter_of(
+        req.front.as_deref(),
+        if base == 2 || base == 5 { 0 } else { 2 },
+    )
+    .map_err(bad_request)?;
 
     let res = tokio::task::spawn_blocking(move || {
         let start = Instant::now();

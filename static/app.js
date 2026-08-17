@@ -682,14 +682,23 @@
     modeMin = m.min;
   }
 
+  function gripBody(body) {
+    // pegada escolhida vale para todos os solvers do 3x3
+    var b = $("cfop-base").value;
+    var f = $("cfop-front").value;
+    if (b) body.base = b;
+    if (f) body.front = f;
+    return body;
+  }
+
   function solveBody() {
-    var body = {
+    var body = gripBody({
       facelets: state.join(""),
       max_len: Math.max(1, +$("opt-max").value || 20),
       target_len: Math.max(0, +$("opt-target").value || 0),
       timeout_ms: Math.max(50, +$("opt-timeout").value || 4000),
       min_ms: modeMin,
-    };
+    });
     if ($("mode").value === "optimal") body.optimal = true;
     var th = +$("opt-threads").value;
     if (th > 0) body.threads = th;
@@ -721,10 +730,10 @@
     resetSolution();
     refresh();
     say("");
-    var body = {
+    var body = gripBody({
       facelets: state.join(""),
       timeout_ms: Math.max(500, +$("opt-timeout").value || 60000),
-    };
+    });
     var th = +$("opt-threads").value;
     if (th > 0) body.threads = th;
     btn.disabled = true;
@@ -906,7 +915,8 @@
       parts.push("fase 1: " + j.phase1 + " / fase 2: " + j.phase2);
       if (j.solutions > 1) parts.push(j.solutions + " soluções, ficou a melhor");
     }
-    $("result").innerHTML = parts.join(" &middot; ");
+    $("result").innerHTML = parts.join(" &middot; ") +
+      (j.hold ? "<br><b>" + j.hold + "</b> O cubo 3D já está nessa orientação." : "");
 
     var box = $("moves");
     box.innerHTML = "";
@@ -1040,6 +1050,27 @@
   });
   $("mode").addEventListener("change", function (e) { applyMode(e.target.value); });
   applyMode($("mode").value);
+
+  // pegada: frentes iguais/opostas a base ficam bloqueadas, com aviso imediato
+  var OPPOSITE = { U: "D", D: "U", R: "L", L: "R", F: "B", B: "F" };
+  var GRIP_NAMES = { U: "branca", R: "vermelha", F: "verde", D: "amarela", L: "laranja", B: "azul" };
+  function refreshGrip() {
+    var b = $("cfop-base").value;
+    var fsel = $("cfop-front");
+    Array.prototype.forEach.call(fsel.options, function (op) {
+      op.disabled = b !== "" && op.value !== "" && (op.value === b || op.value === OPPOSITE[b]);
+    });
+    if (fsel.selectedOptions[0] && fsel.selectedOptions[0].disabled) fsel.value = "";
+    var f = fsel.value;
+    if (b || f) {
+      say(
+        "Pegada: " + (b ? GRIP_NAMES[b] : "como pintei") + " embaixo" +
+        (f ? ", " + GRIP_NAMES[f] + " na frente" : "") +
+        " — vale para Resolver, ótimo e CFOP.", "");
+    }
+  }
+  $("cfop-base").addEventListener("change", refreshGrip);
+  $("cfop-front").addEventListener("change", refreshGrip);
 
   $("p-first").addEventListener("click", function () { stopPlay(); jump(0); });
   $("p-prev").addEventListener("click", function () { stopPlay(); jump(step - 1); });

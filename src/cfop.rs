@@ -390,6 +390,18 @@ const PAIR_NAMES: [&str; 4] = [
     "trás-direita",
 ];
 
+/// Reorienta o estado para a pegada escolhida: a cor do centro `base` vai
+/// para baixo e a do centro `front` para a frente.
+pub fn orient_to_grip(cube: &CubieCube, base: usize, front: usize) -> Result<CubieCube, String> {
+    let rot = all_rotations()
+        .into_iter()
+        .find(|pi| pi[base] == 3 && pi[front] == 2)
+        .ok_or_else(|| {
+            "base e frente precisam ser cores vizinhas (nao iguais nem opostas)".to_string()
+        })?;
+    Ok(rotate_cube(cube, &rot, &rotation_perm(&rot)))
+}
+
 /// `base` e `front` sao letras de face (0..6) do esquema do estado: a cor do
 /// centro `base` vai para baixo e a do centro `front` para a frente.
 pub fn solve_cfop(
@@ -398,13 +410,7 @@ pub fn solve_cfop(
     base: usize,
     front: usize,
 ) -> Result<CfopSolution, String> {
-    let rot = all_rotations()
-        .into_iter()
-        .find(|pi| pi[base] == 3 && pi[front] == 2)
-        .ok_or_else(|| {
-            "base e frente precisam ser cores vizinhas (nao iguais nem opostas)".to_string()
-        })?;
-    let start = rotate_cube(cube, &rot, &rotation_perm(&rot));
+    let start = orient_to_grip(cube, base, front)?;
     let ct = cfop_tables(t);
 
     let mut stages: Vec<CfopStage> = Vec::new();
