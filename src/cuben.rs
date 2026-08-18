@@ -2815,6 +2815,7 @@ impl CubeN {
     /// Sinal da permutacao que um movimento causa nas casas de asa da orbita:
     /// true = IMPAR. Um par de asas trocado (o que parece "aresta virada") e
     /// uma transposicao, logo so uma sequencia impar consegue desfazer.
+    #[cfg(test)]
     fn wing_move_is_odd(&self, oi: usize, m: usize) -> bool {
         let wm = &self.wmove[oi][m];
         let mut visto = [false; 24];
@@ -2833,8 +2834,10 @@ impl CubeN {
         (24 - ciclos) % 2 == 1
     }
 
-    /// Movimentos de sinal impar nessa orbita de asas (candidatos a corrigir a
-    /// troca do par). Vazio se nenhum movimento simples serve.
+    /// Movimentos de sinal impar nessa orbita de asas. Usado pelo teste
+    /// `movimentos_impares_das_asas`, que registra quais sao (medido: os giros
+    /// largos; a fatia pura e par, e por isso nao corrige paridade).
+    #[cfg(test)]
     fn wing_odd_moves(&self, oi: usize) -> Vec<usize> {
         (0..self.n_moves).filter(|&m| self.wing_move_is_odd(oi, m)).collect()
     }
