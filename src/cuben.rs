@@ -1525,8 +1525,20 @@ impl CubeN {
             wbase3: Vec::new(),
             wing_trees: Vec::new(),
         };
-        // 3-ciclos puros e arvores de conjugacao (precisam do resto pronto)
-        cn.base3 = cn.find_base_3cycles();
+        // 3-ciclos puros e arvores de conjugacao (precisam do resto pronto).
+        // A busca custa ~30s somando os tres tamanhos, e o resultado e fixo por
+        // N: vale cachear em disco. O cache e SEMPRE reverificado (suporte 3 na
+        // orbita certa), entao um arquivo velho ou corrompido nao passa.
+        let cache = std::env::temp_dir().join(format!("cubo-solver-3ciclos-{n}.txt"));
+        let (base3, wbase3) = ler_cache_3ciclos(&cache, &cn).unwrap_or_else(|| {
+            let b = cn.find_base_3cycles();
+            let w = cn.find_base_wing_3cycles();
+            if let Err(e) = gravar_cache_3ciclos(&cache, &b, &w) {
+                eprintln!("aviso: nao salvei o cache de 3-ciclos: {e}");
+            }
+            (b, w)
+        });
+        cn.base3 = base3;
         cn.triple_trees = (0..cn.center_orbits.len())
             .map(|oi| match &cn.base3[oi] {
                 Some(seq) => match cn.cycle_support(seq, oi) {
@@ -1536,7 +1548,7 @@ impl CubeN {
                 None => Vec::new(),
             })
             .collect();
-        cn.wbase3 = cn.find_base_wing_3cycles();
+        cn.wbase3 = wbase3;
         cn.wing_trees = (0..cn.wing_orbits.len())
             .map(|oi| match &cn.wbase3[oi] {
                 Some(seq) => match cn.wing_cycle_support(seq, oi) {
@@ -1818,6 +1830,85 @@ impl CubeN {
         }
         out
     }
+}
+
+type Base3 = Vec<Option<Vec<usize>>>;
+
+/// Formato do cache: uma linha por orbita, `c`/`w` + movimentos separados por
+/// espaco (linha vazia = orbita sem 3-ciclo).
+fn gravar_cache_3ciclos(
+    path: &std::path::Path,
+    centros: &Base3,
+    asas: &Base3,
+) -> std::io::Result<()> {
+    let mut txt = String::new();
+    for (marca, lista) in [('c', centros), ('w', asas)] {
+        for item in lista {
+            let seq = item
+                .as_ref()
+                .map(|v| v.iter().map(|m| m.to_string()).collect::<Vec<_>>().join(" "))
+                .unwrap_or_default();
+            txt.push(marca);
+            txt.push(' ');
+            txt.push_str(&seq);
+            txt.push('\n');
+        }
+    }
+    std::fs::write(path, txt)
+}
+
+/// Le o cache e SO aceita sequencias que realmente sao 3-ciclos puros na
+/// orbita esperada — assim um cache velho degrada em recalculo, nunca em bug.
+fn ler_cache_3ciclos(path: &std::path::Path, cn: &CubeN) -> Option<(Base3, Base3)> {
+    let txt = std::fs::read_to_string(path).ok()?;
+    let mut centros: Base3 = Vec::new();
+    let mut asas: Base3 = Vec::new();
+    for linha in txt.lines() {
+        let (marca, resto) = linha.split_at(linha.char_indices().nth(1)?.0);
+        let seq: Option<Vec<usize>> = {
+            let v: Vec<usize> = resto.split_whitespace().filter_map(|x| x.parse().ok()).collect();
+            if v.is_empty() {
+                None
+            } else if v.iter().all(|&m| m < cn.n_moves) {
+                Some(v)
+            } else {
+                return None;
+            }
+        };
+        match marca {
+            "c" => centros.push(seq),
+            "w" => asas.push(seq),
+            _ => return None,
+        }
+    }
+    if centros.len() != cn.center_orbits.len() || asas.len() != cn.wing_orbits.len() {
+        return None;
+    }
+    for (oi, item) in centros.iter().enumerate() {
+        if let Some(seq) = item {
+            if cn.cycle_support(seq, oi).is_none() {
+                return None;
+            }
+            // e tem de ser identidade nas OUTRAS orbitas de centro
+            for outra in 0..cn.center_orbits.len() {
+                if outra == oi {
+                    continue;
+                }
+                let p = cn.cycle_perm(seq, outra);
+                if (0..24).any(|i| p[i] != i as u8) {
+                    return None;
+                }
+            }
+        }
+    }
+    for (oi, item) in asas.iter().enumerate() {
+        if let Some(seq) = item {
+            if cn.wing_cycle_support(seq, oi).is_none() {
+                return None;
+            }
+        }
+    }
+    Some((centros, asas))
 }
 
 fn subset_rank(sorted: &[u8; 4]) -> usize {
@@ -3680,7 +3771,9 @@ mod tests {
     /// Mede, no estado onde a subida empaca, QUANTAS familias conseguem
     /// melhorar. Responde se falta cobertura (nenhuma melhora) ou se o
     /// problema e custo/ordem dos degraus (alguma melhora, mas caro).
+    /// Ferramenta de investigacao (~26s), fora da suite padrao.
     #[test]
+    #[ignore = "diagnostico: rodar quando a fase de centros regredir"]
     fn diagnostico_centros() {
         let inv = |m: usize| (m / 3) * 3 + (2 - m % 3);
         for n in [6usize, 7] {

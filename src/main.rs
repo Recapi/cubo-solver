@@ -1221,6 +1221,14 @@ mod tests {
     use super::*;
     use coord::*;
 
+    /// Tabelas de poda compartilhadas: construir custa segundos e vinte testes
+    /// faziam isso do zero, cada um. Os testes que MUTAM as tabelas (para
+    /// gerar as tabelas grandes) continuam construindo as suas.
+    fn tabelas() -> &'static Tables {
+        static T: std::sync::OnceLock<Tables> = std::sync::OnceLock::new();
+        T.get_or_init(Tables::build)
+    }
+
     #[test]
     fn coordenadas_ida_e_volta() {
         let mut co = [0u8; 8];
@@ -1263,7 +1271,7 @@ mod tests {
 
     #[test]
     fn planificacao_ida_e_volta() {
-        let tables = Tables::build();
+        let tables = tabelas();
         let mut rng = Rng::new();
         for _ in 0..50 {
             let scr = random_scramble(&mut rng, 30);
@@ -1295,7 +1303,7 @@ mod tests {
 
     #[test]
     fn rotacao_do_cubo_tem_ordem_tres() {
-        let tables = Tables::build();
+        let tables = tabelas();
         let mut rng = Rng::new();
         for axis in 1..3 {
             let pi = &facelet::ROT_PI[axis];
@@ -1327,7 +1335,7 @@ mod tests {
 
     #[test]
     fn resolve_cubos_aleatorios() {
-        let tables = Tables::build();
+        let tables = tabelas();
         let mut rng = Rng::new();
         for i in 0..30 {
             let scr = random_scramble(&mut rng, 25);
@@ -1347,7 +1355,7 @@ mod tests {
     #[test]
     fn superflip_e_resolvido() {
         // Superflip: precisa de exatamente 20 movimentos (distancia maxima conhecida).
-        let tables = Tables::build();
+        let tables = tabelas();
         let scr = parse_moves("U R2 F B R B2 R U2 L B2 R U' D' R2 F R' L B2 U2 F2").unwrap();
         let cube = apply_moves(&SOLVED, &scr, &tables);
         let sol = search::solve(&cube, &tables, test_params(5000)).unwrap();
@@ -1358,7 +1366,7 @@ mod tests {
 
     #[test]
     fn cubo_resolvido_da_zero_movimentos() {
-        let tables = Tables::build();
+        let tables = tabelas();
         let sol = search::solve(&SOLVED, &tables, test_params(1000)).unwrap();
         assert_eq!(sol.moves.len(), 0);
     }
@@ -1367,7 +1375,7 @@ mod tests {
     fn tabela_twist_flip_e_completa() {
         // Toda combinacao de orientacoes e alcancavel, e a distancia maxima
         // nesse subespaco e pequena (bem abaixo dos 12 da fase 1 completa).
-        let tables = Tables::build();
+        let tables = tabelas();
         let max = tables.prun_tf.iter().copied().max().unwrap();
         assert!(tables.prun_tf.iter().all(|&v| v != 255), "estado inalcancavel");
         assert!(max <= 12, "distancia maxima {max} inesperada");
@@ -1377,7 +1385,7 @@ mod tests {
     fn modo_melhor_solucao_encurta() {
         // Com alvo baixo a busca continua depois da primeira solucao;
         // o resultado nunca pode ser pior que o do modo rapido.
-        let tables = Tables::build();
+        let tables = tabelas();
         let mut rng = Rng::new();
         for _ in 0..5 {
             let scr = random_scramble(&mut rng, 25);
@@ -1539,7 +1547,7 @@ mod tests {
     fn mapeamento_de_eixos_esta_certo() {
         // Acompanhar as coordenadas dos 3 eixos com movimentos mapeados tem que
         // dar o mesmo resultado que girar o cubo inteiro e ler as coordenadas.
-        let tables = Tables::build();
+        let tables = tabelas();
         let am = optimal::axis_move_table();
         let mut rng = Rng::new();
         for _ in 0..20 {
@@ -1599,7 +1607,7 @@ mod tests {
 
     #[test]
     fn cubo2_otimo_completo() {
-        let tables = Tables::build();
+        let tables = tabelas();
         // tabela de Deus completa + numero de Deus = 11 sao verificados na
         // propria geracao (asserts); aqui: solucoes otimas de estados aleatorios
         let mut rng = Rng::new();
@@ -1648,7 +1656,7 @@ mod tests {
 
     #[test]
     fn cubo4_diagnostico() {
-        let tables = Tables::build();
+        let tables = tabelas();
         // caso trivial 1: resolvido + Uw -> resolver de volta deve ser curto
         let solved_str: String = (0..96).map(|i| "URFDLB".chars().nth(i / 16).unwrap()).collect();
         let mexido = cube4::apply4(&solved_str, "Uw").unwrap();
@@ -1705,7 +1713,7 @@ mod tests {
 
     #[test]
     fn parcial_2x2_e_4x4_so_permitem_completaveis() {
-        let tables = Tables::build();
+        let tables = tabelas();
         let mut rng = Rng::new();
 
         // 2x2: revelar um estado real em ordem aleatoria nunca bloqueia a cor
@@ -1773,7 +1781,7 @@ mod tests {
         // Forca deterministicamente cada cenario de paridade: os proprios
         // algoritmos certificados criam estados com SO OLL, SO PLL e AMBAS
         // (mais um embaralhamento externo por cima) - todos precisam fechar.
-        let tables = Tables::build();
+        let tables = tabelas();
         let solved_str: String = (0..96).map(|i| "URFDLB".chars().nth(i / 16).unwrap()).collect();
         let cenarios = [
             ("so OLL", "Rw' U2 Lw F2 Lw' F2 Rw2 U2 Rw U2 Rw' U2 F2 Rw2 F2", ""),
@@ -1806,12 +1814,23 @@ mod tests {
         }
     }
 
+    /// Um cubo basta para pegar regressao: medido, cada 4x4 custa ~65s.
     #[test]
     fn cubo4_reducao_resolve() {
-        let tables = Tables::build();
+        cubo4_reducao_casos(1);
+    }
+
+    #[test]
+    #[ignore = "pesado: mais cubos aleatorios"]
+    fn cubo4_reducao_exaustivo() {
+        cubo4_reducao_casos(10);
+    }
+
+    fn cubo4_reducao_casos(casos: usize) {
+        let tables = tabelas();
         let mut rng = Rng::new();
         let mut total = 0usize;
-        for i in 0..8 {
+        for i in 0..casos {
             let (f, _) = cube4::scramble4(|n| rng.below(n));
             let sol = cube4::solve4(&f, &tables).unwrap_or_else(|e| panic!("caso {i}: {e}"));
             // o ultimo estado precisa ser o resolvido (uniforme por face)
@@ -1827,7 +1846,7 @@ mod tests {
             assert!(sol.length <= 220, "caso {i}: {} movimentos", sol.length);
             total += sol.length;
         }
-        println!("4x4: media de {:.1} movimentos", total as f64 / 8.0);
+        println!("4x4: media de {:.1} movimentos", total as f64 / casos as f64);
     }
 
     #[test]
@@ -1845,13 +1864,25 @@ mod tests {
         }
     }
 
+    /// Resolve de verdade os tres tamanhos novos. Na suite padrao vai um cubo
+    /// por tamanho (o custo e de minutos); `cubon_reducao_exaustivo` roda mais
+    /// casos e fica fora do padrao.
     #[test]
     fn cubon_reducao_resolve() {
-        let tables = Tables::build();
+        cubon_reducao_casos(1);
+    }
+
+    #[test]
+    #[ignore = "pesado: varios cubos por tamanho"]
+    fn cubon_reducao_exaustivo() {
+        cubon_reducao_casos(3);
+    }
+
+    fn cubon_reducao_casos(casos: usize) {
+        let tables = tabelas();
         let mut rng = Rng::new();
         for n in [5usize, 6, 7] {
             let mut total = 0usize;
-            let casos = 2;
             for i in 0..casos {
                 let (f, _) = cuben::scramble_n(n, |m| rng.below(m));
                 println!("{n}x{n} caso {i}: resolvendo...");
@@ -1881,11 +1912,21 @@ mod tests {
 
     #[test]
     fn cfop_resolve_cubos_aleatorios() {
-        let tables = Tables::build();
+        cfop_casos(12);
+    }
+
+    #[test]
+    #[ignore = "pesado: mais cubos aleatorios"]
+    fn cfop_exaustivo() {
+        cfop_casos(40);
+    }
+
+    fn cfop_casos(casos: usize) {
+        let tables = tabelas();
         let mut rng = Rng::new();
         let mut total = 0usize;
         let bases = [(0usize, 2usize), (3, 2), (1, 0), (4, 5)]; // varias orientacoes
-        for i in 0..30 {
+        for i in 0..casos {
             let scr = random_scramble(&mut rng, 25);
             let cube = apply_moves(&SOLVED, &scr, &tables);
             let (b, f) = bases[i % bases.len()];
@@ -1900,13 +1941,14 @@ mod tests {
             assert!(sol.total <= 90, "caso {i}: {} movimentos", sol.total);
             total += sol.total;
         }
-        println!("CFOP: media de {:.1} movimentos", total as f64 / 30.0);
-        assert!((total as f64 / 30.0) < 75.0, "media alta demais");
+        let media = total as f64 / casos as f64;
+        println!("CFOP: media de {media:.1} movimentos");
+        assert!(media < 75.0, "media alta demais: {media:.1}");
     }
 
     #[test]
     fn cfop_base_e_frente_invalidas_sao_recusadas() {
-        let tables = Tables::build();
+        let tables = tabelas();
         assert!(cfop::solve_cfop(&SOLVED, &tables, 0, 0).is_err()); // iguais
         assert!(cfop::solve_cfop(&SOLVED, &tables, 0, 3).is_err()); // opostas
         assert!(cfop::solve_cfop(&SOLVED, &tables, 0, 2).is_ok());
@@ -1914,7 +1956,7 @@ mod tests {
 
     #[test]
     fn cfop_cobre_todos_os_olls_e_plls() {
-        let tables = Tables::build();
+        let tables = tabelas();
 
         // Todos os 27 x 8 padroes de orientacao da ultima camada (permutacoes
         // na identidade): o pipeline inteiro tem que fechar cada um.
@@ -1984,7 +2026,7 @@ mod tests {
 
     #[test]
     fn parcial_so_permite_cores_completaveis() {
-        let tables = Tables::build();
+        let tables = tabelas();
         let mut rng = Rng::new();
 
         // Revelar um estado valido adesivo a adesivo, em ordem aleatoria:
@@ -2065,7 +2107,7 @@ mod tests {
         }
         // aplicar so a permutacao de arestas do movimento (como a tabela
         // epos_move faz) da o mesmo epos que a multiplicacao completa
-        let tables = Tables::build();
+        let tables = tabelas();
         let mut rng = Rng::new();
         for _ in 0..100 {
             let scr = random_scramble(&mut rng, 15);
@@ -2312,7 +2354,7 @@ mod tests {
 
     #[test]
     fn max_len_e_respeitado() {
-        let tables = Tables::build();
+        let tables = tabelas();
         let mut rng = Rng::new();
         let scr = random_scramble(&mut rng, 25);
         let cube = apply_moves(&SOLVED, &scr, &tables);
