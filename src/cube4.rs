@@ -873,7 +873,7 @@ where
         let workers = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(4)
-            .clamp(1, 12);
+            .clamp(1, 64);
         {
             let found: std::sync::Mutex<Option<Vec<usize>>> = std::sync::Mutex::new(None);
             let stop = AtomicBool::new(false);

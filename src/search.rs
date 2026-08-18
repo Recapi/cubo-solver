@@ -1,4 +1,4 @@
-﻿//! Algoritmo de duas fases de Kociemba com busca IDA* e varias threads.
+//! Algoritmo de duas fases de Kociemba com busca IDA* e varias threads.
 //!
 //! Fase 1: leva o cubo para o subgrupo G1 = <U, D, R2, L2, F2, B2>
 //!         (orientacoes resolvidas + arestas da fatia do meio na fatia).
@@ -327,10 +327,9 @@ pub fn simplify(moves: &[u8]) -> Vec<u8> {
 }
 
 pub fn default_threads() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-        .clamp(1, 12)
+    // todos os processadores logicos: o teto de 12 deixava metade parada numa
+    // maquina de 12 nucleos com 24 threads
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 64)
 }
 
 /// Resolve o cubo com os parametros dados (ver `SolveParams`).
@@ -345,7 +344,7 @@ pub fn solve(cube: &CubieCube, t: &Tables, p: SolveParams) -> Result<Solution, S
             threads: 0,
         });
     }
-    let threads = p.threads.clamp(1, 12);
+    let threads = p.threads.clamp(1, 64);
     let max_len = p.max_len.clamp(1, 30);
     let target = p.target_len.min(max_len);
     let timeout_ms = p.timeout_ms.clamp(50, 30_000);

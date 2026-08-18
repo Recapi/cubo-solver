@@ -317,7 +317,7 @@ async fn api_solve(
             .unwrap_or(if want_optimal { 60_000 } else { 4000 })
             .clamp(50, 600_000),
         min_ms: req.min_ms.unwrap_or(60),
-        threads: req.threads.unwrap_or_else(search::default_threads).clamp(1, 12),
+        threads: req.threads.unwrap_or_else(search::default_threads).clamp(1, 64),
     };
 
     let res = tokio::task::spawn_blocking(move || {
@@ -387,7 +387,7 @@ async fn api_opt_start(
     let (cube, hold) =
         apply_grip(&cube0, req.base.as_deref(), req.front.as_deref()).map_err(bad_request)?;
     let timeout_ms = req.timeout_ms.unwrap_or(60_000).clamp(500, 600_000);
-    let threads = req.threads.unwrap_or_else(search::default_threads).clamp(1, 12);
+    let threads = req.threads.unwrap_or_else(search::default_threads).clamp(1, 64);
 
     // limpeza de jobs concluidos e esquecidos
     {
@@ -1632,7 +1632,6 @@ mod tests {
     #[test]
     fn cubo4_movimentos_e_paridades() {
         // ordens dos movimentos
-        let mv = cube4::moves4();
         for m in 0..cube4::N_MOVES4 {
             let mut s = cube4::solved4();
             let reps = if m % 3 == 1 { 2 } else { 4 };

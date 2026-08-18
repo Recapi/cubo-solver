@@ -129,14 +129,17 @@ pub fn debug_level() -> u8 {
     std::env::var("CUBEN_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0)
 }
 
-/// Threads das buscas paralelas. Sob `cargo test` os testes rodam em paralelo
-/// e cada busca abrindo 12 threads faz todos disputarem os mesmos nucleos —
-/// medido: soma de 34s isolados virava 392s na suite. Em teste usamos poucas.
+/// Threads das buscas paralelas: usa TODOS os processadores logicos (numa
+/// maquina de 12 nucleos / 24 threads, 24 — havia um teto de 12 que deixava
+/// metade parada). Sob `cargo test` os testes ja rodam em paralelo entre si,
+/// entao cada busca usa uma fracao para nao disputarem os mesmos nucleos:
+/// medido, 12 threads por busca faziam 34s isolados virarem 392s na suite.
 fn n_workers() -> usize {
+    let total = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4);
     if cfg!(test) {
-        return 2;
+        return (total / 4).clamp(2, 8);
     }
-    std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4).clamp(1, 12)
+    total.clamp(1, 64)
 }
 
 #[cfg(test)]
@@ -347,6 +350,13 @@ pub fn solve_n_prog(
         }
 
         // ---- asas, orbita a orbita --------------------------------------
+        if dbg >= 1 {
+            let cs = cn.cstate_of(&state);
+            let sinais: Vec<String> = (0..n_worb)
+                .map(|oi| format!("o{oi}={}", cn.wing_state_sign_odd(&cs, oi) as u8))
+                .collect();
+            eprintln!("SINAL apos centros (tentativa {attempt}): {}", sinais.join(" "));
+        }
         let all_bs = cn.wing_bs(false);
         let mut wing_deadlock: Option<usize> = None;
         'wings: for oi in 0..n_worb {
@@ -2353,7 +2363,7 @@ impl CubeN {
         let inv = |m: usize| (m / 3) * 3 + (2 - m % 3);
         // candidatas agrupadas pela perda: 0, 1 ou 2 centros
         let mut por_perda: [Vec<Vec<usize>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
-        let mut classificar = |s: &SN, seq: Vec<usize>, por: &mut [Vec<Vec<usize>>; 3]| {
+        let classificar = |s: &SN, seq: Vec<usize>, por: &mut [Vec<Vec<usize>>; 3]| {
             let t = self.center_total(s);
             if t > total {
                 return; // melhora: nao e caso do platô (a escada acharia)
@@ -2847,6 +2857,19 @@ impl CubeN {
         (n - ciclos) % 2 == 1
     }
 
+    /// Sinal da permutacao das asas no ESTADO (nao de uma sequencia): as duas
+    /// asas de um tipo sao distinguiveis pelo bit, entao o estado e uma
+    /// permutacao de 24 pecas. E esse sinal que decide se o agrupamento vai
+    /// esbarrar em paridade — saber disso ANTES evita montar tudo e refazer.
+    fn wing_state_sign_odd(&self, s: &SN, oi: usize) -> bool {
+        let mut p = [0u8; 24];
+        for q in 0..24 {
+            let bit = ((s.wo[oi] >> q) & 1) as u8;
+            p[q] = s.wt[oi * 24 + q] * 2 + bit;
+        }
+        Self::perm_sign_odd(&p)
+    }
+
     /// Sinais de uma sequencia: por orbita de asas e nas arestas do meio.
     fn seq_signs(&self, seq: &[usize]) -> (Vec<bool>, bool) {
         let mut asas = Vec::with_capacity(self.wing_orbits.len());
@@ -3082,7 +3105,8 @@ impl CubeN {
     /// nao ha platô nem ciclo — e o que garante o fechamento dos centros.
     fn constructive_center_step(&self, cs: &SN) -> Option<Vec<usize>> {
         let total = self.center_total(cs);
-        for oi in 0..self.center_orbits.len() {
+        let mut melhor: Option<Vec<usize>> = None;
+        'orbitas: for oi in 0..self.center_orbits.len() {
             if self.base3[oi].is_none() {
                 continue;
             }
@@ -3109,13 +3133,19 @@ impl CubeN {
                     for r in candidatos_r {
                         // tenta as duas orientacoes do ciclo
                         for trio in [[p as u8, q as u8, r as u8], [p as u8, r as u8, q as u8]] {
+                            // Aceita o PRIMEIRO que melhora. Tentei escolher o
+                            // de melhor custo por peca ganha, para encurtar a
+                            // solucao: o 7x7 passou de 6.6s para mais de 6
+                            // minutos e o ganho de comprimento nao se
+                            // confirmou. Medido e revertido.
                             if let Some(seq) = self.cycle_triple(oi, trio) {
                                 let mut s = *cs;
                                 for &m in &seq {
                                     s = self.capply(&s, m);
                                 }
                                 if self.center_total(&s) > total {
-                                    return Some(seq);
+                                    melhor = Some(seq);
+                                    break 'orbitas;
                                 }
                             }
                         }
@@ -3123,7 +3153,7 @@ impl CubeN {
                 }
             }
         }
-        None
+        melhor
     }
 
     /// Familia "fatia, encaixa, desfaz": `S · A · S'`, com S uma fatia e A uma

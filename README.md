@@ -11,9 +11,10 @@ algoritmos em Rust, sem dependências de solver externas. Seis tamanhos:
   3×3), com as paridades OLL/PLL corrigidas por algoritmos certificados por
   simulação; ~110 movimentos e etapas nomeadas no player;
 - **5×5, 6×6 e 7×7** — redução genérica, com o fim de jogo **construído** em vez
-  de procurado (ver abaixo). Medido: ~470 movimentos em 3 s no 5×5, ~930 em
-  10–20 s no 6×6, ~1215 em 80–165 s no 7×7. Como levam minutos, a interface
-  acompanha por job com progresso em vez de esperar a requisição.
+  de procurado (ver abaixo). Medido no servidor: ~440 movimentos em ~4 s no 5×5,
+  ~1000 em 50–80 s no 6×6, ~1180 em **~9 s** no 7×7 (o 6×6 é o mais lento por
+  precisar de mais tentativas de paridade). A interface acompanha por job com
+  progresso, já que pode passar de um minuto.
 
 ## A ideia que fez os cubos grandes funcionarem
 
@@ -41,6 +42,73 @@ desfaz. O solver calcula o sinal das permutações e escolhe uma sequência ímp
 na órbita travada e par nas outras (medido: os ímpares são os giros largos, e a
 fatia pura é par — é o tipo de detalhe que só o cálculo revela). Ver os testes
 `base_3ciclos_*` e `movimentos_impares_das_asas`, que registram esses fatos.
+
+## O que mudou, e quanto rendeu
+
+Cada linha abaixo saiu de **medição**, não de estimativa — e em quase todos os
+casos o gargalo não era o que eu supunha. O padrão que se repetiu: instrumentar
+primeiro (quem resolve cada passo, e a que custo), depois mexer.
+
+### Cubos grandes: de travado a 7,8 s
+
+| passo | o que estava errado | resultado |
+|---|---|---|
+| Fatia pura no alfabeto | Sem ela, órbitas internas não têm 3-ciclo puro, e o fim de jogo virava busca cega | Centros do 5×5: de travar indefinidamente para 1,2 s |
+| Construção em vez de busca | Conjugar um 3-ciclo base cobre qualquer trio; procurar não escala | 6×6 fechou pela primeira vez; 7×7 em 67 s |
+| **Ordem dos degraus** | O 3-ciclo construído vinha *depois* das buscas caras | Centros do 7×7: 67 s → **1,6 s**; 7×7 completo: 80 s → **~9 s** |
+| Usar todos os processadores | Teto fixo de 12 threads em cinco pontos do código, numa máquina de 24 lógicos | Metade do processador estava ociosa |
+
+A tabela que expôs o problema de ordem, medindo os centros do 7×7:
+
+| degrau | usos | acertos | tempo |
+|---|---|---|---|
+| `macro3` | 175 | 10 | **706,7 s** |
+| `fatia-encaixa` | 176 | 0 | 27,9 s |
+| `macro12` | 355 | 179 | 12,0 s |
+| `comutador1` | 176 | 0 | 5,5 s |
+| `3-ciclo construído` | 165 | **94** | **0,0 s** |
+
+O degrau que resolvia mais casos custava menos que um milissegundo e estava em
+penúltimo lugar; o que quase nunca acertava consumia 706 s. Nas asas a medição
+contrariou a intuição oposta: os 304 passos foram **todos** resolvidos pela
+construção, e os degraus caros ali nunca entram — são apenas rede de segurança.
+
+### Suíte de testes: 691 s → 109 s
+
+| causa | medida | ganho |
+|---|---|---|
+| Contenção de threads | `cargo test` roda em paralelo e cada busca abria 12 threads; isolados os testes somavam 34 s, juntos davam 392 s | 2 threads sob `cfg(test)` |
+| Busca dos 3-ciclos repetida | 66 s por processo, para um resultado fixo por tamanho | Cache em disco (68 a 222 bytes): **66 s → 1 s** |
+| Tabelas de poda | 20 testes construíam do zero | Instância compartilhada |
+| Casos redundantes | Cada 4×4 custa ~65 s de solver, e a suíte rodava 8 | Versões exaustivas em `--ignored` |
+
+O cache dos 3-ciclos é **sempre reverificado**: cada sequência prova de novo que
+é 3-ciclo puro na órbita certa e identidade nas outras. Cache velho vira
+recálculo, nunca bug silencioso.
+
+### Uma otimização que foi medida e revertida
+
+Trocar "aceita o primeiro trio que melhora" por "escolhe o de melhor custo por
+peça ganha" parecia certo — é de lá que vem quase todo o comprimento da
+solução. Na prática o 7×7 saiu de 6,6 s para **mais de 6 minutos**, e o ganho de
+comprimento (779 contra 1023 movimentos) era uma amostra só, dentro da variação
+normal entre embaralhamentos. Revertido, com o motivo registrado no código para
+não se repetir a tentativa sem medir.
+
+### Pendências honestas
+
+- O **6×6 precisa de várias tentativas de paridade** (4 numa medição), enquanto
+  o 5×5 acerta de primeira. Medi o sinal da permutação das asas após os centros
+  esperando prever isso, e **não prevê**: as mesmas configurações que falham às
+  vezes funcionam. Sem a regra correta, corrigir preventivamente estragaria
+  casos bons — então ficou como está, com reinício perturbado.
+- As soluções são longas (~780 a 1250 movimentos) contra ~200 de um humano. O
+  caminho seria uma tabela de casos de fim de jogo, como os conjuntos de
+  algoritmos que cubistas decoram.
+- O 4×4 também cabe na construção genérica e resolve em 0,2 a 3,5 s (contra
+  ~65 s do solver dedicado), mas com ~400 movimentos em vez de ~110. Como nesse
+  tamanho alguém executa a solução na mão, o padrão segue no solver curto; o
+  caminho genérico fica coberto pelo teste `cubo4_pela_construcao_generica`.
 
 ## Rodar
 

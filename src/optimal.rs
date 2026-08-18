@@ -455,7 +455,7 @@ pub fn solve_optimal(
             threads: 0,
         });
     }
-    let threads = threads.clamp(1, 12);
+    let threads = threads.clamp(1, 64);
     let start = Instant::now();
     let deadline = start + Duration::from_millis(timeout_ms.clamp(500, 600_000));
 
