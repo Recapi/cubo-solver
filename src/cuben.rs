@@ -137,7 +137,16 @@ pub fn debug_level() -> u8 {
 /// metade parada). Sob `cargo test` os testes ja rodam em paralelo entre si,
 /// entao cada busca usa uma fracao para nao disputarem os mesmos nucleos:
 /// medido, 12 threads por busca faziam 34s isolados virarem 392s na suite.
+///
+/// `CUBEN_WORKERS=1` deixa a busca DETERMINISTICA, e isso importa para medir:
+/// as buscas paralelas param no primeiro achado, entao quem vence depende de
+/// qual thread chegou antes. MEDIDO: o mesmo binario, com a mesma semente,
+/// resolveu um 6x6 em 926 movimentos/3.3s numa rodada e 956/10.3s na seguinte.
+/// Comparar duas versoes sem fixar isso e comparar ruido.
 fn n_workers() -> usize {
+    if let Some(w) = std::env::var("CUBEN_WORKERS").ok().and_then(|v| v.parse::<usize>().ok()) {
+        return w.max(1);
+    }
     let total = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4);
     if cfg!(test) {
         return (total / 4).clamp(2, 8);
@@ -372,6 +381,14 @@ pub fn solve_n_prog(
         // que troca essa paridade sem mexer nos centros e reagrupamos. Os
         // centros ficam prontos, entao a segunda rodada e barata.
         let mut rodadas = 0;
+        // instrumentacao: as duas correcoes de paridade (a de dentro do
+        // agrupamento e a do fim da rodada) usam a MESMA sequencia; se elas se
+        // desfizerem, o retrato abaixo mostra a oscilacao.
+        let diag = |cn: &CubeN, cs: &SN| -> String {
+            let inv: Vec<usize> = (0..n_worb).map(|o| cn.invertidos(cs, o)).collect();
+            let grp: Vec<usize> = (0..n_worb).map(|o| cn.grouped_count(cs, o)).collect();
+            format!("invertidos={inv:?} agrupados={grp:?}")
+        };
         'agrupar: loop {
         'wings: for oi in 0..n_worb {
             let mut guard = 0;
@@ -441,7 +458,10 @@ pub fn solve_n_prog(
                         if let Some(alg) = cn.flip_alg.clone() {
                             flips_usados += 1;
                             if dbg >= 1 {
-                                eprintln!("asas orbita {oi}: orientação -> correção no lugar");
+                                eprintln!(
+                                    "asas orbita {oi}: orientação -> correção no lugar ({})",
+                                    diag(&cn, &cs)
+                                );
                             }
                             push_stage(
                                 &cn,
@@ -639,7 +659,10 @@ pub fn solve_n_prog(
             if cn.invertidos(&cs, 0) % 2 == 1 {
                 if let Some(alg) = cn.flip_alg.clone() {
                     if dbg >= 1 {
-                        eprintln!("paridade das arestas impar: aplicando a correcao certificada");
+                        eprintln!(
+                            "paridade impar no fim da rodada {rodadas}: correcao certificada ({})",
+                            diag(&cn, &cs)
+                        );
                     }
                     push_stage(
                         &cn,
@@ -1692,6 +1715,23 @@ impl CubeN {
         // cubos com paridade impar nao fecham — o 3x3 recusa a reducao.
         if n % 2 == 0 {
             let base = cn.cstate_of(&cn.solved());
+            // O criterio e frouxo de proposito: centros intactos e paridade
+            // trocada na orbita 0. No 6x6 isso aceita uma sequencia que inverte
+            // METADE da aresta — as orbitas ficam em desacordo e a aresta
+            // desagrupa (12 -> 11).
+            //
+            // MEDIDO, e contra a intuicao: exigir a aresta INTEIRA (largura 3 no
+            // 6x6, que vira as duas orbitas de uma vez) piora 6 casos de 37.9s
+            // para 96.0s. A explicacao esta no diagnostico: com 11 pares
+            // formados, o que destrava o agrupamento e a PERTURBACAO, nao a
+            // troca de paridade. A sequencia coerente deixa os agrupamentos
+            // exatamente como estavam (medido: nunca passou de 11/12, nem
+            // conjugada por giros de face ate profundidade 3), entao o solver
+            // cai no caminho caro de refazer tudo do inicio. A que "estraga" um
+            // par muda a configuracao e o agrupamento acha saida.
+            //
+            // Fica registrado para nao se tentar de novo: ver
+            // `retrato_da_correcao_de_paridade` para o que cada uma faz.
             for txt in [
                 "Rw' U2 Lw F2 Lw' F2 Rw2 U2 Rw U2 Rw' U2 F2 Rw2 F2",
                 "Rw2 B2 U2 Lw U2 Rw' U2 Rw U2 F2 Rw F2 Lw' B2 Rw2",
@@ -3180,6 +3220,7 @@ impl CubeN {
         self.constructive_wing_step_par(cs, oi, false)
     }
 
+
     /// `exigir_par`: so aceita a sequencia se, ao fechar as 12 arestas, o
     /// numero de pares invertidos ficar par (senao o 3x3 recusa a reducao).
     fn constructive_wing_step_par(
@@ -3884,54 +3925,77 @@ mod tests {
         st
     }
 
-    /// O 3x3 reduzido so aceita um numero PAR de pares invertidos na orbita 0
-    /// (medido: com impar ele acusa "uma aresta esta invertida"). Como a
-    /// orientacao NAO pode ser escolhida ao fechar a ultima aresta — cada asa
-    /// tem quiralidade fixa —, a correcao precisa ser uma sequencia que inverta
-    /// UM par no lugar, preservando centros e o resto. Este teste verifica, por
-    /// simulacao, se os algoritmos conhecidos do 4x4 fazem isso nos cubos
-    /// maiores; o que passar vira a correcao usada.
+    /// O 3x3 reduzido so aceita um numero PAR de pares invertidos (com impar ele
+    /// acusa "uma aresta esta invertida"), e a orientacao NAO pode ser escolhida
+    /// ao fechar a ultima aresta — cada asa tem quiralidade fixa. Logo a correcao
+    /// precisa ser uma sequencia que vire uma aresta no lugar.
+    ///
+    /// Vira a aresta INTEIRA, e nao so uma orbita: virar metade poe as orbitas em
+    /// desacordo, a aresta desagrupa, o agrupamento chama a mesma sequencia para
+    /// reorientar e a paridade volta ao ponto de partida. Medido no 6x6, esse
+    /// ciclo de periodo 2 so terminava esgotando as rodadas e refazendo o cubo
+    /// do zero (7 aplicacoes, ~5s jogados fora por tentativa).
+    /// O que a correcao certificada faz, aresta por aresta: quais casas ela
+    /// inverte em cada orbita. Se as orbitas nao inverterem A MESMA aresta, a
+    /// aresta nao esta virando inteira — esta virando metade aqui e metade ali.
     #[test]
-    fn acha_algoritmo_de_inverter_par() {
-        let candidatos = [
-            "Rw' U2 Lw F2 Lw' F2 Rw2 U2 Rw U2 Rw' U2 F2 Rw2 F2",
-            "Rw U2 Rw U2 Rw' U2 Rw U2 Lw' U2 Rw' U2 Rw U2 Rw' U2 Rw'",
-            "Rw2 B2 U2 Lw U2 Rw' U2 Rw U2 F2 Rw F2 Lw' B2 Rw2",
-        ];
+    #[ignore = "diagnóstico: retrato da correção de paridade"]
+    fn retrato_da_correcao_de_paridade() {
         for n in [4usize, 6] {
             let cn = cuben(n);
             let base = cn.cstate_of(&cn.solved());
-            println!("\nN={n}:");
-            for (i, txt) in candidatos.iter().enumerate() {
-                let Ok(seq) = cn.parse_moves(txt) else {
-                    println!("  cand {i}: nao parseia");
-                    continue;
-                };
-                let mut s = base;
-                for &m in &seq {
-                    s = cn.capply(&s, m);
-                }
-                let centros_ok = s.cent == base.cent;
-                // quantas casas de asa mudaram de tipo, e quantos bits viraram
-                let mut tipos = 0;
-                let mut bits = 0;
-                for oi in 0..cn.wing_orbits.len() {
-                    for q in 0..24 {
-                        if s.wt[oi * 24 + q] != base.wt[oi * 24 + q] {
-                            tipos += 1;
-                        }
-                        if (s.wo[oi] >> q) & 1 != (base.wo[oi] >> q) & 1 {
-                            bits += 1;
-                        }
-                    }
-                }
-                let inv = (0..cn.wing_orbits.len())
-                    .map(|oi| cn.invertidos(&s, oi))
-                    .collect::<Vec<_>>();
+            let Some(seq) = cn.flip_alg.clone() else {
+                println!("N={n}: sem correcao");
+                continue;
+            };
+            let mut s = base;
+            for &m in &seq {
+                s = cn.capply(&s, m);
+            }
+            println!("\nN={n}: {} movimentos", seq.len());
+            for oi in 0..cn.wing_orbits.len() {
+                let virou: Vec<usize> = (0..12)
+                    .filter(|&j| (s.wo[oi] >> (2 * j)) & 1 != (base.wo[oi] >> (2 * j)) & 1)
+                    .collect();
+                let desagrupou: Vec<usize> =
+                    (0..12).filter(|&t| !cn.grouped(&s, oi, t)).collect();
+                let mudou_casa: Vec<usize> = (0..24)
+                    .filter(|&q| s.wt[oi * 24 + q] != base.wt[oi * 24 + q])
+                    .collect();
                 println!(
-                    "  cand {i}: centros_ok={centros_ok} tipos_mexidos={tipos} bits_virados={bits} invertidos={inv:?}"
+                    "  orbita {oi}: inverteu as arestas {virou:?}, desagrupou {desagrupou:?}, casas mexidas {}",
+                    mudou_casa.len()
                 );
             }
+        }
+    }
+
+    /// Guarda o que o build tem de entregar nos cubos pares: existe correcao, ela
+    /// nao toca nos centros e troca a paridade dos pares invertidos.
+    ///
+    /// NAO exige que a aresta vire inteira. E tentador — a sequencia coerente
+    /// existe (largura 3 no 6x6) e parece mais limpa —, mas foi medido: 6 casos
+    /// passaram de 37.9s para 96.0s. O comentario no build explica por que.
+    #[test]
+    fn correcao_de_paridade_certificada() {
+        for n in [4usize, 6] {
+            let cn = cuben(n);
+            let seq = cn
+                .flip_alg
+                .clone()
+                .unwrap_or_else(|| panic!("N={n}: build nao certificou nenhuma correcao"));
+            let base = cn.cstate_of(&cn.solved());
+            let mut s = base;
+            for &m in &seq {
+                s = cn.capply(&s, m);
+            }
+            assert_eq!(s.cent, base.cent, "N={n}: a correcao mexeu nos centros");
+            assert_eq!(
+                cn.invertidos(&s, 0) % 2,
+                1,
+                "N={n}: a correcao nao trocou a paridade"
+            );
+            println!("N={n}: correcao com {} movimentos", seq.len());
         }
     }
 
@@ -4023,6 +4087,45 @@ mod tests {
     /// O caso lento do 7x7 (semente 1072 da régua) leva ~9 minutos. Este teste
     /// mostra ONDE ele gasta: em que contagem de centros/asas empaca, quantos
     /// reinícios faz e quanto custa cada degrau.
+    /// Onde o 6x6 gasta o tempo (hoje o mais lento dos tres). Sendo par, ele
+    /// nao tem centro fixo de referencia, entao depende das correcoes de
+    /// paridade — a suspeita e que o custo esteja ai. Rodar com CUBEN_DEBUG=1.
+    #[test]
+    #[ignore = "diagnóstico do 6x6"]
+    fn diagnostico_6x6_pipeline() {
+        let tables = Tables::build();
+        let cn = cuben(6);
+        let mut total = 0.0;
+        let mut movs = 0usize;
+        for caso in 0..6 {
+            let st = lcg_scramble(&cn, 1000 + (60 + caso) as u64, 60);
+            let entrada = cn.render(&st, &['U', 'R', 'F', 'D', 'L', 'B']);
+            let t0 = std::time::Instant::now();
+            let sol = solve_n(6, &entrada, &tables).expect("resolver");
+            total += t0.elapsed().as_secs_f64();
+            movs += sol.length;
+            println!(
+                "\n6x6 caso {caso}: {} movimentos em {:.1}s, {} etapas",
+                sol.length,
+                t0.elapsed().as_secs_f64(),
+                sol.stages.len()
+            );
+            let mut por_nome: Vec<(String, usize)> = Vec::new();
+            for s in &sol.stages {
+                let chave = s.name.split(" (").next().unwrap_or(&s.name).to_string();
+                match por_nome.iter_mut().find(|(n, _)| *n == chave) {
+                    Some((_, q)) => *q += s.tokens.len(),
+                    None => por_nome.push((chave, s.tokens.len())),
+                }
+            }
+            por_nome.sort_by_key(|(_, q)| std::cmp::Reverse(*q));
+            for (nome, q) in por_nome.iter().take(3) {
+                println!("  {q:5} movimentos — {nome}");
+            }
+        }
+        println!("\nTOTAL 6x6: {total:.1}s, {movs} movimentos");
+    }
+
     /// O mesmo caso, mas pelo pipeline inteiro: mede quanto vai para centros,
     /// asas e paridade. Rodar com CUBEN_DEBUG=1 para ver os degraus.
     #[test]

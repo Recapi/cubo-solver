@@ -38,6 +38,13 @@ linhas `DEGRAU` (asas) e `CDEGRAU` (centros) com quem resolveu e quanto custou;
 tabular isso já apontou um degrau que gastava 706 s para acertar 10 de 175
 tentativas enquanto outro resolvia 94 casos em tempo desprezível.
 
+**Fixe as threads antes de comparar.** As buscas param no primeiro achado, e
+quem acha primeiro depende de qual thread chegou antes — o solver é
+não-determinístico. Medido: o mesmo binário, mesma semente, resolveu um 6×6 em
+926 movimentos/3,3 s numa rodada e 956/10,3 s na seguinte. Para medir, use
+`CUBEN_WORKERS=1` (uma thread, resultado reprodutível); em produção deixe sem a
+variável, que aí usa todos os processadores.
+
 **Toda busca cara precisa de teto.** Sem limite de candidatos/profundidade, o
 solver gasta minutos onde um caminho simples resolve em segundos — e, medido, o
 teto melhorou também a *consistência*, não só a média.
@@ -68,10 +75,19 @@ genérica entra só como rede de segurança, depois dos degraus construtivos.
 
 ## O que está em aberto
 
-- O 6×6 e o 7×7 às vezes precisam de várias tentativas de paridade, e cada uma
-  descarta o trabalho feito. A lei que decide (número par de arestas
-  invertidas) está identificada e aplicada ao fechar a última órbita; o que
-  falta é prever antes de montar.
+- **O 6×6 é hoje o mais caro, e o custo tem nome: recomeço.** Medido em 6 casos
+  (`diagnostico_6x6_pipeline`), o tempo vai quase todo em refazer o pipeline
+  inteiro quando a paridade das asas exige uma sequência de sinal ímpar — que
+  mexe nos centros. Um caso chegou a 8 tentativas, cada uma remontando centros
+  (~3 s) e reagrupando as 12 arestas. Os casos que fecham na primeira tentativa
+  levam ~3,5 s; os que recomeçam, 15 s ou mais. O caminho é consertar a
+  paridade **no lugar** (como já se faz com a sequência certificada quando tudo
+  está agrupado) em vez de descartar o trabalho.
+- Não adianta trocar a correção de paridade por uma "mais correta": a que vira
+  a aresta inteira (largura 3 no 6×6, coerente nas duas órbitas) foi medida e
+  custa 96 s onde a atual custa 38 s. Com 11 pares formados quem destrava o
+  agrupamento é a *perturbação*, não a troca de paridade — e a coerente não
+  perturba nada. Detalhes no comentário do `flip_alg` em `cuben.rs`.
 - As soluções são longas (~440 no 5×5, ~1200 no 7×7) contra ~200 de um humano.
   O custo está no método: cada peça de centro consome um comutador de 8 a 12
   movimentos mais a conjugação. Encurtar pede colocar mais peças por comutador.
