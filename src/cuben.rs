@@ -607,6 +607,29 @@ pub fn solve_n_prog(
                     wing_deadlock = Some(oi);
                     break 'wings;
                 }
+                // Fatia, encaixa (giros de face), desfaz: fecha UM par por ~5
+                // movimentos. Estava depois do 3-ciclo e por isso nunca rodava
+                // — o 3-ciclo quase sempre acerta, so que a 16.7 mov/par. Vem
+                // antes, com a fatia da camada desta orbita (as outras nunca
+                // aceitam e a varredura sai cara).
+                if found.is_none() {
+                    // Protege as orbitas JA agrupadas: diferente do 3-ciclo,
+                    // que e cirurgico, este degrau e generico e desmanchava a
+                    // orbita 0 ao trabalhar na 1 — o 7x7 terminava com "o cubo
+                    // nao fechou". O `goal_any` sozinho nao basta aqui.
+                    let antes: Vec<usize> =
+                        (0..n_worb).map(|o| cn.grouped_count(&cs, o)).collect();
+                    let goal_seguro = |s: &SN| {
+                        goal_any(s) && (0..n_worb).all(|o| cn.grouped_count(s, o) >= antes[o])
+                    };
+                    for prof in 2..=3usize {
+                        found = cn.slice_face_macro_camada(&cs, &goal_seguro, prof, Some(oi + 1));
+                        if found.is_some() {
+                            step = "fatia-encaixa";
+                            break;
+                        }
+                    }
+                }
                 // construcao garantida: 3-ciclos cirurgicos de asas (dois
                 // deles fecham um par). Vem antes das enumeracoes genericas,
                 // que custavam minutos por tentativa e nem sempre achavam.
@@ -615,8 +638,8 @@ pub fn solve_n_prog(
                     found = cn.constructive_wing_step(&cs, oi);
                 }
                 if found.is_none() {
-                    // fatia, encaixa (giros de face), desfaz
-                    step = "fatia-encaixa";
+                    // fatia larga, como rede: qualquer camada, mais fundo
+                    step = "fatia-larga";
                     for prof in 2..=4usize {
                         found = cn.slice_face_macro(&cs, &goal_any, prof);
                         if found.is_some() {
