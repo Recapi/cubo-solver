@@ -1385,20 +1385,19 @@ pub fn solve4(input: &str, t: &Tables) -> Result<Solve4, String> {
         let camada = |m: usize| if m < 18 { m / 3 } else { 6 + (m - 18) / 3 };
         let eixo = |m: usize| (if m < 18 { m / 3 } else { (m - 18) / 3 }) % 3;
         let monta = |c: usize, p: usize| if c < 6 { c * 3 + p } else { 18 + (c - 6) * 3 + p };
-        let so_movs: Vec<usize> = planos.iter().map(|&(m, _)| m).collect();
-        let limpo = crate::simplify::simplify(&so_movs, camada, eixo, monta);
-        if limpo.len() < so_movs.len() {
+        // cada movimento carrega o indice da etapa: mapear pelo indice da
+        // lista limpa deslizava os rotulos apos o primeiro cancelamento
+        let limpo = crate::simplify::simplify_com_rotulos(&planos, camada, eixo, monta);
+        if limpo.len() < planos.len() {
             // reconstroi etapas e estados com a lista enxuta
-            let etapa_de = |i: usize| planos.get(i).map(|&(_, s)| s).unwrap_or(0);
             let nomes: Vec<(String, String)> =
                 stages.iter().map(|s| (s.name.clone(), s.info.clone())).collect();
             let (mut novo, _) = parse4(input)?;
             let mut novos: Vec<Stage4> = Vec::new();
             let mut novos_estados = vec![render4(&novo, &letters)];
-            for (i, &m) in limpo.iter().enumerate() {
+            for &(m, si) in &limpo {
                 apply_move4(&mut novo, m);
                 novos_estados.push(render4(&novo, &letters));
-                let si = etapa_de(i.min(planos.len().saturating_sub(1)));
                 let nome = nomes.get(si).map(|x| x.0.clone()).unwrap_or_default();
                 match novos.last_mut() {
                     Some(u) if u.name == nome => u.tokens.push(move_name4(m)),

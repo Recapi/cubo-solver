@@ -521,29 +521,29 @@ pub fn solve_cfop(
     // redundancia nas emendas (a cruz termina com U e o F2L comeca com U).
     // So aceitamos se continuar resolvendo.
     {
-        let planos: Vec<(u8, usize)> = stages
+        // cada movimento carrega o indice da etapa: mapear pelo indice da
+        // lista limpa deslizava os rotulos apos o primeiro cancelamento
+        let planos: Vec<(usize, usize)> = stages
             .iter()
             .enumerate()
-            .flat_map(|(si, s)| s.moves.iter().map(move |&m| (m, si)))
+            .flat_map(|(si, s)| s.moves.iter().map(move |&m| (m as usize, si)))
             .collect();
-        let so_movs: Vec<usize> = planos.iter().map(|&(m, _)| m as usize).collect();
-        let limpo = crate::simplify::simplify(
-            &so_movs,
+        let limpo = crate::simplify::simplify_com_rotulos(
+            &planos,
             |m| m / 3,          // camada = face (o 3x3 so tem giros externos)
             |m| (m / 3) % 3,    // eixo: U/D, R/L, F/B
             |c, p| c * 3 + p,
         );
-        if limpo.len() < so_movs.len() {
+        if limpo.len() < planos.len() {
             let mut prova = start;
-            for &m in &limpo {
+            for &(m, _) in &limpo {
                 prova = prova.multiply(&t.mc[m]);
             }
             if prova.is_solved() {
                 let nomes: Vec<(String, String)> =
                     stages.iter().map(|s| (s.name.clone(), s.info.clone())).collect();
                 let mut novas: Vec<CfopStage> = Vec::new();
-                for (i, &m) in limpo.iter().enumerate() {
-                    let si = planos.get(i).map(|&(_, s)| s).unwrap_or(0);
+                for &(m, si) in &limpo {
                     let nome = nomes.get(si).map(|x| x.0.clone()).unwrap_or_default();
                     match novas.last_mut() {
                         Some(u) if u.name == nome => u.moves.push(m as u8),

@@ -422,6 +422,11 @@ pub fn solve_n_prog(
             let mut guard = 0;
             let mut kicks = 0usize;
             let mut flips_usados = 0usize;
+            // O lote acerta enquanto a posicao esta rica em material e depois
+            // so falha — e cada falha paga a varredura inteira (MEDIDO: 86
+            // acertos contra ~400 falhas, e o 7x7 em 10s onde a base fazia
+            // 3.6s). Na primeira falha, para de tentar nesta orbita.
+            let mut lote_vivo = true;
             loop {
                 let cs = cn.cstate_of(&state);
                 let count = cn.grouped_count(&cs, oi);
@@ -472,11 +477,41 @@ pub fn solve_n_prog(
                 // Vai direto para a fatia, que troca a paridade.
                 let so_orientacao = count == 11;
                 let mut step = "curta";
-                let mut found = if so_orientacao {
-                    cn.constructive_wing_step(&cs, oi)
-                } else {
-                    NSearch::run(&cn, &cs, &goal_any, &h_any, 4)
-                };
+                let mut found = None;
+                // FATIA EM LOTE, o metodo humano: sanduiche fatia + giros
+                // externos + desfaz, exigindo que feche DUAS arestas de uma
+                // vez. Os centros ficam intactos por construcao (giros
+                // externos nao tocam centro de outra face), e as outras
+                // orbitas sao protegidas no objetivo. Profundidade curta de
+                // proposito: 2-3 giros externos = 4-5 movimentos por 2 pares,
+                // ~2.5 mov/par contra 16.5 do 3-ciclo cirurgico.
+                if lote_vivo && !so_orientacao && count <= 10 {
+                    let antes: Vec<usize> =
+                        (0..n_worb).map(|o| cn.grouped_count(&cs, o)).collect();
+                    let goal_lote = |s: &SN| {
+                        cn.c_centers_solved(s, n_corb, &[])
+                            && cn.grouped_count(s, oi) >= count + 2
+                            && (0..n_worb).all(|o| cn.grouped_count(s, o) >= antes[o])
+                    };
+                    for prof in 2..=3usize {
+                        found = cn.slice_face_macro_camada(&cs, &goal_lote, prof, Some(oi + 1));
+                        if found.is_some() {
+                            step = "fatia-lote";
+                            break;
+                        }
+                    }
+                    if found.is_none() {
+                        lote_vivo = false;
+                    }
+                }
+                if found.is_none() {
+                    step = "curta";
+                    found = if so_orientacao {
+                        cn.constructive_wing_step(&cs, oi)
+                    } else {
+                        NSearch::run(&cn, &cs, &goal_any, &h_any, 4)
+                    };
+                }
                 if so_orientacao && found.is_none() {
                     // Faltando so a orientacao do ultimo par: a sequencia
                     // certificada troca essa relacao SEM mexer nos centros,
@@ -857,21 +892,17 @@ pub fn solve_n_prog(
             }
         }
         // Junta o que e da mesma camada e reordena o que comuta (mesmo eixo):
-        // sem reordenar, `R L R'` ficava como estava.
-        let so_movs: Vec<usize> = planos.iter().map(|&(m, _)| m).collect();
-        let etapa_de: Vec<usize> = planos.iter().map(|&(_, s)| s).collect();
+        // sem reordenar, `R L R'` ficava como estava. Cada movimento carrega o
+        // indice da etapa consigo — mapear pelo indice da lista limpa nao
+        // funciona (apos o primeiro cancelamento os rotulos deslizavam e a
+        // etapa "Resolver como 3x3" exibia 0 movimentos).
         let depths = cn.depths;
-        let enxuto = crate::simplify::simplify(
-            &so_movs,
+        let limpo: Vec<(usize, usize)> = crate::simplify::simplify_com_rotulos(
+            &planos,
             |m| m / 3,
             |m| (m / 3 / depths) % 3,
             |c, p| c * 3 + p,
         );
-        let limpo: Vec<(usize, usize)> = enxuto
-            .iter()
-            .enumerate()
-            .map(|(i, &m)| (m, *etapa_de.get(i).unwrap_or(&0)))
-            .collect();
         if limpo.len() < states.len() - 1 {
             let nomes: Vec<(String, String)> =
                 stages.iter().map(|s| (s.name.clone(), s.info.clone())).collect();
@@ -3650,6 +3681,21 @@ impl CubeN {
         goal: &G,
         max_a: usize,
     ) -> Option<Vec<usize>> {
+        self.slice_face_macro_camada(cs, goal, max_a, None)
+    }
+
+    /// `camada`: restringe as fatias a uma profundidade. Para agrupar a orbita
+    /// `oi`, so a fatia da camada `oi+1` mexe nas asas certas — varrer as
+    /// outras e custo puro (MEDIDO: o degrau de lote sem o filtro levou o 7x7
+    /// de 3.6s para 17.2s, porque cada tentativa fracassada pagava a varredura
+    /// completa antes de cair no 3-ciclo).
+    fn slice_face_macro_camada<G: Fn(&SN) -> bool + Sync>(
+        &self,
+        cs: &SN,
+        goal: &G,
+        max_a: usize,
+        camada: Option<usize>,
+    ) -> Option<Vec<usize>> {
         let inv = |m: usize| (m / 3) * 3 + (2 - m % 3);
         let faces: Vec<usize> = (0..6)
             .flat_map(|f| (0..3).map(move |pw| (f * self.depths) * 3 + pw))
@@ -3657,6 +3703,7 @@ impl CubeN {
         let slices: Vec<usize> = (0..6)
             .flat_map(|f| {
                 (1..self.depths)
+                    .filter(move |&d| camada.is_none_or(|c| c == d))
                     .flat_map(move |d| (0..3).map(move |pw| ((f * self.depths) + d) * 3 + pw))
             })
             .collect();

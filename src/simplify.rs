@@ -20,21 +20,43 @@ where
     A: Fn(usize) -> usize,
     B: Fn(usize, usize) -> usize,
 {
+    let com: Vec<(usize, usize)> = moves.iter().map(|&m| (m, 0)).collect();
+    simplify_com_rotulos(&com, layer, axis, build).into_iter().map(|(m, _)| m).collect()
+}
+
+/// Igual a `simplify`, mas cada movimento carrega um rotulo (ex.: o indice da
+/// etapa a que pertence) que sobrevive a limpeza. Quando dois movimentos se
+/// fundem, fica o rotulo do que JA estava na saida — o mais antigo.
+///
+/// Existe porque mapear a lista limpa de volta as etapas pelo INDICE nao
+/// funciona: apos o primeiro cancelamento tudo desliza, e a etapa final
+/// ("Resolver como 3x3") chegava a exibir 0 movimentos na interface.
+pub fn simplify_com_rotulos<L, A, B>(
+    moves: &[(usize, usize)],
+    layer: L,
+    axis: A,
+    build: B,
+) -> Vec<(usize, usize)>
+where
+    L: Fn(usize) -> usize,
+    A: Fn(usize) -> usize,
+    B: Fn(usize, usize) -> usize,
+{
     let quartos = |m: usize| match m % 3 {
         0 => 1u32,
         1 => 2,
         _ => 3,
     };
-    let mut atual: Vec<usize> = moves.to_vec();
+    let mut atual: Vec<(usize, usize)> = moves.to_vec();
     loop {
-        let mut saida: Vec<usize> = Vec::with_capacity(atual.len());
+        let mut saida: Vec<(usize, usize)> = Vec::with_capacity(atual.len());
         let mut mudou = false;
-        for &m in &atual {
+        for &(m, rot) in &atual {
             // procura para tras, atravessando so o que comuta com m
             let mut i = saida.len();
             let mut alvo = None;
             while i > 0 {
-                let ant = saida[i - 1];
+                let ant = saida[i - 1].0;
                 if layer(ant) == layer(m) {
                     alvo = Some(i - 1);
                     break;
@@ -47,7 +69,7 @@ where
             match alvo {
                 Some(k) => {
                     mudou = true;
-                    let total = (quartos(saida[k]) + quartos(m)) % 4;
+                    let total = (quartos(saida[k].0) + quartos(m)) % 4;
                     if total == 0 {
                         saida.remove(k); // um desfaz o outro
                     } else {
@@ -56,10 +78,10 @@ where
                             2 => 1,
                             _ => 2,
                         };
-                        saida[k] = build(layer(m), pot);
+                        saida[k].0 = build(layer(m), pot);
                     }
                 }
-                None => saida.push(m),
+                None => saida.push((m, rot)),
             }
         }
         atual = saida;
