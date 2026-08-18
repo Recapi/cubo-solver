@@ -43,7 +43,11 @@ quem acha primeiro depende de qual thread chegou antes — o solver é
 não-determinístico. Medido: o mesmo binário, mesma semente, resolveu um 6×6 em
 926 movimentos/3,3 s numa rodada e 956/10,3 s na seguinte. Para medir, use
 `CUBEN_WORKERS=1` (uma thread, resultado reprodutível); em produção deixe sem a
-variável, que aí usa todos os processadores.
+variável, que aí usa todos os processadores. Resta um resíduo de ±2 movimentos
+vindo do 3×3 final: o Kociemba melhora a solução até estourar um orçamento de
+tempo (`timeout_ms` em `search.rs`), então o polimento depende do relógio. Para
+comparar variantes isso é ruído desprezível; só não trate contagem exata como
+prova de igualdade.
 
 **Toda busca cara precisa de teto.** Sem limite de candidatos/profundidade, o
 solver gasta minutos onde um caminho simples resolve em segundos — e, medido, o

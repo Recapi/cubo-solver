@@ -211,10 +211,24 @@ pub fn solve_n_prog(
     // refazer centros+asas custa segundos, entao vale insistir bastante.
     // Cada tentativa recomeca do estado ORIGINAL com as perturbacoes de
     // paridade como prefixo: o trabalho perdido nao entra na solucao final.
+    //
+    // TENTADO E REVERTIDO, tres vezes, sempre pior (medido com CUBEN_WORKERS=1,
+    // nos mesmos 6 cubos): retomar do ponto "centros prontos" em vez de refazer.
+    // Parece obvio — os centros ja estao la, e a correcao so os perturba um
+    // pouco —, mas
+    //   1. reparar centros perturbados NAO e mais barato que monta-los do zero:
+    //      a subida monotona lida bem com um cubo generico e mal com um quase
+    //      pronto que levou um giro largo (218s -> 341s so nos 5 primeiros
+    //      casos);
+    //   2. o reparo entra na solucao. Marcando o ponto a cada tentativa, o
+    //      reparo de uma sobrevive na seguinte e a coisa incha (5480 -> 9248
+    //      movimentos); com marca unica ainda sobra o reparo da ultima.
+    // Descartar trabalho sai mais barato que reaproveita-lo.
     let max_attempts = 24;
     let inicial = state.clone();
     let mut prefixo: Vec<usize> = Vec::new();
     'attempt: for attempt in 0..max_attempts {
+        {
         state = inicial.clone();
         stages.clear();
         states = vec![cn.render(&state, &letters)];
@@ -229,6 +243,7 @@ pub fn solve_n_prog(
                 "Troca a paridade antes de reduzir; sem isso o cubo não fecha.".into(),
                 &p,
             );
+        }
         }
         // ---- centros: subida monotonica da medida global -----------------
         // Cada passo aumenta o numero de centros na face certa (contando os
@@ -797,6 +812,10 @@ pub fn solve_n_prog(
                         seq.iter().map(|&m| cn.move_name(m)).collect::<Vec<_>>().join(" ")
                     );
                 }
+                // MEDIDO: com uma thread, os 6 casos tiveram 7 recomecos, TODOS
+                // por aqui — nenhum por travamento de asas. E aqui que uma
+                // melhoria valeria; retomar dos centros prontos ja foi tentado
+                // e sai pior (ver o comentario no topo do laco).
                 prefixo.extend(seq);
             }
         }
@@ -1721,8 +1740,12 @@ impl CubeN {
             // desagrupa (12 -> 11).
             //
             // MEDIDO, e contra a intuicao: exigir a aresta INTEIRA (largura 3 no
-            // 6x6, que vira as duas orbitas de uma vez) piora 6 casos de 37.9s
-            // para 96.0s. A explicacao esta no diagnostico: com 11 pares
+            // 6x6, que vira as duas orbitas de uma vez) piora 6 casos de 218s
+            // para 464s, e ainda alonga as solucoes (5480 -> 5840 movimentos).
+            // Medicao deterministica, com CUBEN_WORKERS=1 dos dois lados — a
+            // primeira versao deste numero (38s contra 96s) saiu de rodadas
+            // paralelas, que variam sozinhas.  A explicacao esta no diagnostico:
+            // com 11 pares
             // formados, o que destrava o agrupamento e a PERTURBACAO, nao a
             // troca de paridade. A sequencia coerente deixa os agrupamentos
             // exatamente como estavam (medido: nunca passou de 11/12, nem
@@ -1732,20 +1755,46 @@ impl CubeN {
             //
             // Fica registrado para nao se tentar de novo: ver
             // `retrato_da_correcao_de_paridade` para o que cada uma faz.
-            for txt in [
-                "Rw' U2 Lw F2 Lw' F2 Rw2 U2 Rw U2 Rw' U2 F2 Rw2 F2",
-                "Rw2 B2 U2 Lw U2 Rw' U2 Rw U2 F2 Rw F2 Lw' B2 Rw2",
-            ] {
-                let Ok(seq) = cn.parse_moves(txt) else { continue };
-                let mut s = base;
-                for &m in &seq {
-                    s = cn.capply(&s, m);
-                }
-                let centros_intactos = s.cent == base.cent;
-                let trocou_paridade = cn.invertidos(&s, 0) % 2 == 1;
-                if centros_intactos && trocou_paridade {
-                    cn.flip_alg = Some(seq);
-                    break;
+            //
+            // `CUBEN_FLIP_INTEIRO=1` liga a variante coerente, para refazer a
+            // medicao (de preferencia com CUBEN_WORKERS=1, senao e ruido).
+            let inteiro = std::env::var("CUBEN_FLIP_INTEIRO").is_ok();
+            let n_worb = cn.wing_orbits.len();
+            let com_largura = |txt: &str, w: usize| -> String {
+                txt.split_whitespace()
+                    .map(|t| {
+                        if t.contains('w') && w > 2 {
+                            format!("{w}{t}")
+                        } else {
+                            t.to_string()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            };
+            'certifica: for w in 2..=n / 2 {
+                for txt in [
+                    "Rw' U2 Lw F2 Lw' F2 Rw2 U2 Rw U2 Rw' U2 F2 Rw2 F2",
+                    "Rw2 B2 U2 Lw U2 Rw' U2 Rw U2 F2 Rw F2 Lw' B2 Rw2",
+                ] {
+                    let Ok(seq) = cn.parse_moves(&com_largura(txt, w)) else { continue };
+                    let mut s = base;
+                    for &m in &seq {
+                        s = cn.capply(&s, m);
+                    }
+                    let centros_intactos = s.cent == base.cent;
+                    let trocou_paridade = if inteiro {
+                        // a aresta vira por inteiro: nenhuma orbita desagrupa e
+                        // a paridade troca em todas elas
+                        (0..n_worb).all(|o| cn.grouped_count(&s, o) == 12)
+                            && (0..n_worb).all(|o| cn.invertidos(&s, o) % 2 == 1)
+                    } else {
+                        cn.invertidos(&s, 0) % 2 == 1
+                    };
+                    if centros_intactos && trocou_paridade {
+                        cn.flip_alg = Some(seq);
+                        break 'certifica;
+                    }
                 }
             }
         }
