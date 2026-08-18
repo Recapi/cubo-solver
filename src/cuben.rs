@@ -88,6 +88,26 @@ pub struct CubeN {
     /// Cubos pares: sequencia que troca a paridade dos pares invertidos da
     /// orbita 0 SEM mexer nos centros. Certificada por simulacao no build.
     flip_alg: Option<Vec<usize>>,
+    /// Correcoes das paridades do MAPA 3x3, para agir NO LUGAR: preservam os
+    /// centros e mantem todas as orbitas agrupadas, entao aplicam-se depois da
+    /// reducao sem refazer nada. Certificadas por simulacao no build.
+    /// `oll_alg` vira uma aresta inteira; `pll_alg` troca duas arestas.
+    oll_alg: Option<Vec<usize>>,
+    pll_alg: Option<Vec<usize>>,
+}
+
+/// Reescreve os giros largos de um algoritmo para a largura `w` ("Rw" -> "3Rw").
+fn com_largura(txt: &str, w: usize) -> String {
+    txt.split_whitespace()
+        .map(|t| {
+            if t.contains('w') && w > 2 {
+                format!("{w}{t}")
+            } else {
+                t.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 static REGISTRY: OnceLock<Mutex<HashMap<usize, Arc<CubeN>>>> = OnceLock::new();
@@ -812,6 +832,30 @@ pub fn solve_n_prog(
             );
         }
         say("Resolvendo como 3x3", stages.iter().map(|s| s.tokens.len()).sum());
+        // Paridades do mapa 3x3, corrigidas NO LUGAR. As sequencias sao
+        // certificadas no build (preservam centros, mantem tudo agrupado, e
+        // aplicadas ao cubo resolvido produzem justamente o erro que corrigem),
+        // entao nao ha por que refazer o cubo — que era o que acontecia, e
+        // respondia por TODOS os recomecos medidos no 6x6 (7 em 6 casos).
+        // Duas rodadas bastam: sao duas paridades independentes, cada uma de
+        // dois estados. O caminho antigo continua abaixo como rede de seguranca.
+        for _ in 0..2 {
+            let Err(e) = crate::facelet::to_cubie(&cn.reduce_to_3x3(&state)) else { break };
+            let alg = if e.contains("invertida") { &cn.oll_alg } else { &cn.pll_alg };
+            let Some(a) = alg.clone() else { break };
+            if dbg >= 1 {
+                eprintln!("paridade do 3x3 no lugar ({e})");
+            }
+            push_stage(
+                &cn,
+                &mut state,
+                &mut states,
+                &mut stages,
+                "Paridade das arestas".into(),
+                "Ajuste que o cubo reduzido exige; não mexe nos centros.".into(),
+                &a,
+            );
+        }
         let f3 = cn.reduce_to_3x3(&state);
         match crate::facelet::to_cubie(&f3) {
             Ok(cube3) => {
@@ -1762,6 +1806,8 @@ impl CubeN {
             wbase3_fontes: Vec::new(),
             wing_trees: Vec::new(),
             flip_alg: None,
+            oll_alg: None,
+            pll_alg: None,
         };
         // 3-ciclos puros e arvores de conjugacao (precisam do resto pronto).
         // A busca custa ~30s somando os tres tamanhos, e o resultado e fixo por
@@ -1862,6 +1908,28 @@ impl CubeN {
                 }
             }
         }
+        // Correcoes das paridades do mapa 3x3, para agir NO LUGAR. Medido: os
+        // recomecos do 6x6 vinham TODOS daqui (7 em 6 casos), e cada um refazia
+        // centros e as 12 arestas do zero.
+        cn.oll_alg = cn.certifica_paridade_3x3(
+            &[
+                "Rw' U2 Lw F2 Lw' F2 Rw2 U2 Rw U2 Rw' U2 F2 Rw2 F2",
+                "Rw2 B2 U2 Lw U2 Rw' U2 Rw U2 F2 Rw F2 Lw' B2 Rw2",
+                "Rw U2 Rw U2 Rw U2 Rw U2 Rw",
+                "Rw U2 Rw U2 Rw' U2 Rw U2 Lw' U2 Rw' U2 Rw U2 Rw' U2 Rw'",
+            ],
+            "invertida",
+        );
+        cn.pll_alg = cn.certifica_paridade_3x3(
+            &[
+                "Rw2 U2 Rw2 Uw2 Rw2 Uw2",
+                "Uw2 Rw2 Uw2 Rw2 Uw2 Rw2",
+                "Rw2 F2 U2 Rw2 U2 F2 Rw2",
+                "Rw2 U2 Rw2 U2 Rw2 Uw2 Rw2 Uw2",
+                "Rw2 B2 Rw2 U2 Rw2 U2 B2 Rw2",
+            ],
+            "duas pecas",
+        );
         cn.wbase3_fontes = (0..cn.wing_orbits.len())
             .map(|oi| match &cn.wbase3[oi] {
                 Some(seq) => cn.variantes_do_ciclo(seq, false, oi),
@@ -2936,6 +3004,45 @@ impl CubeN {
     /// Arvore de conjugacao: de qual trio de casas se chega a qual, e por qual
     /// movimento. Permite levar o trio base a QUALQUER trio, instantaneamente.
     /// Indice do trio (a,b,c) = a*576 + b*24 + c.
+    /// Certifica, por SIMULACAO, uma sequencia que corrige uma paridade do mapa
+    /// 3x3 agindo NO LUGAR. Tres exigencias, todas verificadas:
+    ///   1. os centros ficam intactos;
+    ///   2. todas as orbitas continuam agrupadas (12/12) — a aresta e tratada
+    ///      inteira, senao a reducao se desfaz;
+    ///   3. aplicada ao cubo RESOLVIDO, ela produz exatamente o erro que se
+    ///      quer corrigir.
+    ///
+    /// A terceira e o pulo do gato: paridade e invariante de dois estados, logo
+    /// a sequencia que CRIA o erro num cubo bom o CANCELA num cubo ruim. Quem
+    /// julga e o mesmo `to_cubie` que recusa a reducao — nao ha convencao minha
+    /// no meio.
+    fn certifica_paridade_3x3(&self, textos: &[&str], erro: &str) -> Option<Vec<usize>> {
+        let base = self.cstate_of(&self.solved());
+        let n_worb = self.wing_orbits.len();
+        for w in 2..=(self.n / 2).max(2) {
+            for txt in textos {
+                let Ok(seq) = self.parse_moves(&com_largura(txt, w)) else { continue };
+                let mut st = self.solved();
+                for &m in &seq {
+                    self.apply(&mut st, m);
+                }
+                let cs = self.cstate_of(&st);
+                if cs.cent != base.cent || cs.mid != base.mid {
+                    continue;
+                }
+                if !(0..n_worb).all(|o| self.grouped_count(&cs, o) == 12) {
+                    continue;
+                }
+                if let Err(e) = crate::facelet::to_cubie(&self.reduce_to_3x3(&st)) {
+                    if e.contains(erro) {
+                        return Some(seq);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Variantes de um 3-ciclo puro que saem DE GRACA: o inverso e as
     /// "rotacoes" — remapear as faces da sequencia leva o ciclo a outro trio
     /// com o MESMO comprimento. Nao assumimos convencao nenhuma: todas as 720
@@ -4478,6 +4585,46 @@ mod tests {
             }
         }
         println!("\nTOTAL 6x6: {total:.1}s, {movs} movimentos");
+    }
+
+    /// As correcoes de paridade do mapa 3x3 tem de existir e agir NO LUGAR.
+    /// Sem elas o solver refaz o cubo inteiro a cada paridade (medido: 7
+    /// recomecos em 6 casos do 6x6, cada um remontando centros e as 12
+    /// arestas).
+    #[test]
+    fn paridades_do_3x3_corrigidas_no_lugar() {
+        for n in [4usize, 5, 6, 7] {
+            let cn = cuben(n);
+            let base = cn.cstate_of(&cn.solved());
+            let mut achou = Vec::new();
+            for (nome, alg) in [("OLL", &cn.oll_alg), ("PLL", &cn.pll_alg)] {
+                let Some(seq) = alg else { continue };
+                // age no lugar: centros intactos e tudo agrupado
+                let mut st = cn.solved();
+                for &m in seq {
+                    cn.apply(&mut st, m);
+                }
+                let cs = cn.cstate_of(&st);
+                assert_eq!(cs.cent, base.cent, "N={n} {nome}: mexeu nos centros");
+                for oi in 0..cn.wing_orbits.len() {
+                    assert_eq!(
+                        cn.grouped_count(&cs, oi),
+                        12,
+                        "N={n} {nome}: desagrupou a orbita {oi}"
+                    );
+                }
+                // e ela mesma se cancela: aplicar duas vezes volta ao valido
+                for &m in seq {
+                    cn.apply(&mut st, m);
+                }
+                assert!(
+                    crate::facelet::to_cubie(&cn.reduce_to_3x3(&st)).is_ok(),
+                    "N={n} {nome}: aplicada duas vezes deveria voltar ao valido"
+                );
+                achou.push(format!("{nome}={} mov", seq.len()));
+            }
+            println!("N={n}: {}", if achou.is_empty() { "nenhuma".into() } else { achou.join(" ") });
+        }
     }
 
     /// Anatomia do 3-ciclo: cada ciclo custa |B| + 2|V| (base pura + conjugacao
