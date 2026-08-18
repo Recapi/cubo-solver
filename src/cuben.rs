@@ -76,11 +76,15 @@ pub struct CubeN {
     pair2_dist: Vec<Vec<u8>>,
     /// [orbita] comutador que e 3-ciclo PURO dessa orbita de centro
     base3: Vec<Option<Vec<usize>>>,
-    /// [orbita] arvore que leva o trio-suporte do 3-ciclo base a qualquer trio
-    triple_trees: Vec<Vec<(u16, u8)>>,
+    /// [orbita] as variantes gratis do ciclo base (rotacoes e inverso), cada
+    /// uma com seu trio-suporte: sao as raizes da arvore multi-fonte
+    base3_fontes: Vec<Vec<([u8; 3], Vec<usize>)>>,
+    /// [orbita] arvore multi-raiz: (pai, movimento, fonte) por trio ordenado
+    triple_trees: Vec<Vec<(u16, u8, u8)>>,
     /// idem para as orbitas de ASAS
     wbase3: Vec<Option<Vec<usize>>>,
-    wing_trees: Vec<Vec<(u16, u8)>>,
+    wbase3_fontes: Vec<Vec<([u8; 3], Vec<usize>)>>,
+    wing_trees: Vec<Vec<(u16, u8, u8)>>,
     /// Cubos pares: sequencia que troca a paridade dos pares invertidos da
     /// orbita 0 SEM mexer nos centros. Certificada por simulacao no build.
     flip_alg: Option<Vec<usize>>,
@@ -1752,8 +1756,10 @@ impl CubeN {
             pair_dist,
             pair2_dist,
             base3: Vec::new(),
+            base3_fontes: Vec::new(),
             triple_trees: Vec::new(),
             wbase3: Vec::new(),
+            wbase3_fontes: Vec::new(),
             wing_trees: Vec::new(),
             flip_alg: None,
         };
@@ -1771,13 +1777,19 @@ impl CubeN {
             (b, w)
         });
         cn.base3 = base3;
-        cn.triple_trees = (0..cn.center_orbits.len())
+        cn.base3_fontes = (0..cn.center_orbits.len())
             .map(|oi| match &cn.base3[oi] {
-                Some(seq) => match cn.cycle_support(seq, oi) {
-                    Some(trio) => cn.triple_tree(oi, trio),
-                    None => Vec::new(),
-                },
+                Some(seq) => cn.variantes_do_ciclo(seq, true, oi),
                 None => Vec::new(),
+            })
+            .collect();
+        cn.triple_trees = (0..cn.center_orbits.len())
+            .map(|oi| {
+                if cn.base3_fontes[oi].is_empty() {
+                    Vec::new()
+                } else {
+                    cn.triple_tree_multi(oi, &cn.base3_fontes[oi], false)
+                }
             })
             .collect();
         cn.wbase3 = wbase3;
@@ -1850,13 +1862,19 @@ impl CubeN {
                 }
             }
         }
-        cn.wing_trees = (0..cn.wing_orbits.len())
+        cn.wbase3_fontes = (0..cn.wing_orbits.len())
             .map(|oi| match &cn.wbase3[oi] {
-                Some(seq) => match cn.wing_cycle_support(seq, oi) {
-                    Some(trio) => cn.wing_triple_tree(oi, trio),
-                    None => Vec::new(),
-                },
+                Some(seq) => cn.variantes_do_ciclo(seq, false, oi),
                 None => Vec::new(),
+            })
+            .collect();
+        cn.wing_trees = (0..cn.wing_orbits.len())
+            .map(|oi| {
+                if cn.wbase3_fontes[oi].is_empty() {
+                    Vec::new()
+                } else {
+                    cn.triple_tree_multi(oi, &cn.wbase3_fontes[oi], true)
+                }
             })
             .collect();
         cn
@@ -2912,21 +2930,144 @@ impl CubeN {
     /// Arvore de conjugacao: de qual trio de casas se chega a qual, e por qual
     /// movimento. Permite levar o trio base a QUALQUER trio, instantaneamente.
     /// Indice do trio (a,b,c) = a*576 + b*24 + c.
-    fn triple_tree(&self, oi: usize, base: [u8; 3]) -> Vec<(u16, u8)> {
+    /// Variantes de um 3-ciclo puro que saem DE GRACA: o inverso e as
+    /// "rotacoes" — remapear as faces da sequencia leva o ciclo a outro trio
+    /// com o MESMO comprimento. Nao assumimos convencao nenhuma: todas as 720
+    /// permutacoes de faces (com e sem espelhar o sentido) sao testadas por
+    /// simulacao, e so passa o que continua sendo um 3-ciclo puro da mesma
+    /// orbita. Cada variante vira uma raiz a mais na arvore de conjugacao —
+    /// e cada nivel a menos na arvore economiza 2 movimentos por ciclo.
+    fn variantes_do_ciclo(
+        &self,
+        seq: &[usize],
+        centros: bool,
+        oi: usize,
+    ) -> Vec<([u8; 3], Vec<usize>)> {
+        let inv = |m: usize| (m / 3) * 3 + (2 - m % 3);
+        let inverso: Vec<usize> = seq.iter().rev().map(|&m| inv(m)).collect();
+        let base = self.cstate_of(&self.solved());
+        let n_corb = self.center_orbits.len();
+        let n_worb = self.wing_orbits.len();
+        let mut saida: Vec<([u8; 3], Vec<usize>)> = Vec::new();
+        // permutacoes de 6 faces por troca de pares (geracao simples)
+        let mut perms: Vec<[usize; 6]> = vec![[0, 1, 2, 3, 4, 5]];
+        for k in 1..6 {
+            let mut prox = Vec::new();
+            for p in &perms {
+                for j in 0..=k {
+                    let mut q = *p;
+                    q.swap(j, k);
+                    prox.push(q);
+                }
+            }
+            perms = prox;
+        }
+        for origem in [seq, inverso.as_slice()] {
+            for p in &perms {
+                for espelha in [false, true] {
+                    let cand: Vec<usize> = origem
+                        .iter()
+                        .map(|&m| {
+                            let f = m / 3 / self.depths;
+                            let d = m / 3 % self.depths;
+                            let pw = if espelha { 2 - m % 3 } else { m % 3 };
+                            (p[f] * self.depths + d) * 3 + pw
+                        })
+                        .collect();
+                    // Pureza por SIMULACAO, com os mesmos criterios do build
+                    // (permutacao de casas, nao cores — pecas iguais trocadas
+                    // nao aparecem na cor):
+                    //   centros: meios intactos, 3 casas mexidas em oi, zero
+                    //     nas outras orbitas de centro;
+                    //   asas: centros/meios/mt/mo intactos, nenhuma asa
+                    //     virada, 3 casas mexidas em oi, zero nas outras.
+                    let mut s = base;
+                    for &m in &cand {
+                        s = self.capply(&s, m);
+                    }
+                    if s.mid != base.mid {
+                        continue;
+                    }
+                    let mut ok = true;
+                    if centros {
+                        for o in 0..n_corb {
+                            let p = self.cycle_perm(&cand, o);
+                            let mexidas = (0..24).filter(|&i| p[i] != i as u8).count();
+                            if (o == oi && mexidas != 3) || (o != oi && mexidas != 0) {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    } else {
+                        if s.cent != base.cent
+                            || s.mt != base.mt
+                            || s.mo != base.mo
+                            || s.wo.iter().any(|&x| x != 0)
+                        {
+                            continue;
+                        }
+                        for o in 0..n_worb {
+                            let mut p: [u8; 24] = std::array::from_fn(|i| i as u8);
+                            for &m in &cand {
+                                let wm = &self.wmove[o][m];
+                                for x in p.iter_mut() {
+                                    *x = wm[*x as usize];
+                                }
+                            }
+                            let mexidas = (0..24).filter(|&i| p[i] != i as u8).count();
+                            if (o == oi && mexidas != 3) || (o != oi && mexidas != 0) {
+                                ok = false;
+                                break;
+                            }
+                        }
+                    }
+                    if !ok {
+                        continue;
+                    }
+                    let trio = if centros {
+                        self.cycle_support(&cand, oi)
+                    } else {
+                        self.wing_cycle_support(&cand, oi)
+                    };
+                    let Some(trio) = trio else { continue };
+                    if !saida.iter().any(|(t, _)| *t == trio) {
+                        saida.push((trio, cand));
+                    }
+                }
+            }
+        }
+        saida
+    }
+
+    /// Arvore de conjugacao MULTI-RAIZ: BFS a partir de todos os trios-base ao
+    /// mesmo tempo. Cada casa guarda (pai, movimento, fonte); a fonte diz qual
+    /// dos ciclos-base usar ao chegar na raiz. MEDIDO antes: |V| medio de 3.8
+    /// com raiz unica — cada nivel economizado sao 2 movimentos por ciclo.
+    fn triple_tree_multi(
+        &self,
+        oi: usize,
+        raizes: &[([u8; 3], Vec<usize>)],
+        asas: bool,
+    ) -> Vec<(u16, u8, u8)> {
         let idx = |t: [u8; 3]| t[0] as usize * 576 + t[1] as usize * 24 + t[2] as usize;
-        let mut arvore = vec![(u16::MAX, u8::MAX); 24 * 24 * 24];
-        let inicio = idx(base);
-        arvore[inicio] = (u16::MAX, u8::MAX - 1); // raiz
+        let mut arvore = vec![(u16::MAX, u8::MAX, 0u8); 24 * 24 * 24];
         let mut fila = std::collections::VecDeque::new();
-        fila.push_back(base);
+        for (fonte, (trio, _)) in raizes.iter().enumerate() {
+            let i = idx(*trio);
+            if arvore[i].1 == u8::MAX {
+                arvore[i] = (u16::MAX, u8::MAX - 1, fonte as u8);
+                fila.push_back(*trio);
+            }
+        }
         while let Some(t) = fila.pop_front() {
             let de = idx(t);
+            let fonte = arvore[de].2;
             for m in 0..self.n_moves {
-                let cm = &self.cmove[oi][m];
-                let nt = [cm[t[0] as usize], cm[t[1] as usize], cm[t[2] as usize]];
+                let tab = if asas { &self.wmove[oi][m] } else { &self.cmove[oi][m] };
+                let nt = [tab[t[0] as usize], tab[t[1] as usize], tab[t[2] as usize]];
                 let para = idx(nt);
                 if arvore[para].1 == u8::MAX {
-                    arvore[para] = (de as u16, m as u8);
+                    arvore[para] = (de as u16, m as u8, fonte);
                     fila.push_back(nt);
                 }
             }
@@ -3069,17 +3210,16 @@ impl CubeN {
     /// cirurgico: mexe so essas 3 pecas.
     fn cycle_triple(&self, oi: usize, alvo: [u8; 3]) -> Option<Vec<usize>> {
         let inv = |m: usize| (m / 3) * 3 + (2 - m % 3);
-        let base = self.base3[oi].as_ref()?;
         let arvore = self.triple_trees.get(oi)?;
         if arvore.is_empty() {
             return None;
         }
         let idx = |t: [u8; 3]| t[0] as usize * 576 + t[1] as usize * 24 + t[2] as usize;
-        // caminho do trio base ate o alvo
+        // caminho da raiz mais proxima (fonte) ate o alvo
         let mut caminho = Vec::new();
         let mut atual = idx(alvo);
         loop {
-            let (pai, mov) = arvore[atual];
+            let (pai, mov, _) = arvore[atual];
             if mov == u8::MAX {
                 return None; // trio inalcancavel
             }
@@ -3089,7 +3229,8 @@ impl CubeN {
             caminho.push(mov as usize);
             atual = pai as usize;
         }
-        caminho.reverse(); // W: leva o trio base ao alvo
+        let base = &self.base3_fontes[oi].get(arvore[atual].2 as usize)?.1;
+        caminho.reverse(); // W: leva o trio da fonte ao alvo
         let mut seq: Vec<usize> = caminho.iter().rev().map(|&m| inv(m)).collect();
         seq.extend(base.iter().copied());
         seq.extend(caminho.iter().copied());
@@ -3255,31 +3396,9 @@ impl CubeN {
         Some([x, y, z])
     }
 
-    fn wing_triple_tree(&self, oi: usize, base: [u8; 3]) -> Vec<(u16, u8)> {
-        let idx = |t: [u8; 3]| t[0] as usize * 576 + t[1] as usize * 24 + t[2] as usize;
-        let mut arvore = vec![(u16::MAX, u8::MAX); 24 * 24 * 24];
-        arvore[idx(base)] = (u16::MAX, u8::MAX - 1);
-        let mut fila = std::collections::VecDeque::new();
-        fila.push_back(base);
-        while let Some(t) = fila.pop_front() {
-            let de = idx(t);
-            for m in 0..self.n_moves {
-                let wm = &self.wmove[oi][m];
-                let nt = [wm[t[0] as usize], wm[t[1] as usize], wm[t[2] as usize]];
-                let para = idx(nt);
-                if arvore[para].1 == u8::MAX {
-                    arvore[para] = (de as u16, m as u8);
-                    fila.push_back(nt);
-                }
-            }
-        }
-        arvore
-    }
-
     /// Sequencia que 3-cicla as casas `alvo` da orbita de ASAS `oi`.
     fn wing_cycle_triple(&self, oi: usize, alvo: [u8; 3]) -> Option<Vec<usize>> {
         let inv = |m: usize| (m / 3) * 3 + (2 - m % 3);
-        let base = self.wbase3[oi].as_ref()?;
         let arvore = self.wing_trees.get(oi)?;
         if arvore.is_empty() {
             return None;
@@ -3288,7 +3407,7 @@ impl CubeN {
         let mut caminho = Vec::new();
         let mut atual = idx(alvo);
         loop {
-            let (pai, mov) = arvore[atual];
+            let (pai, mov, _) = arvore[atual];
             if mov == u8::MAX {
                 return None;
             }
@@ -3298,6 +3417,7 @@ impl CubeN {
             caminho.push(mov as usize);
             atual = pai as usize;
         }
+        let base = &self.wbase3_fontes[oi].get(arvore[atual].2 as usize)?.1;
         caminho.reverse();
         let mut seq: Vec<usize> = caminho.iter().rev().map(|&m| inv(m)).collect();
         seq.extend(base.iter().copied());
@@ -4291,7 +4411,7 @@ mod tests {
                     println!("  centros órbita {oi}: sem árvore");
                     continue;
                 }
-                let alcancados = arvore.iter().filter(|(_, m)| *m != u8::MAX).count();
+                let alcancados = arvore.iter().filter(|(_, m, _)| *m != u8::MAX).count();
                 println!(
                     "  centros órbita {oi}: {alcancados} de {total_trios} ({:.0}%)",
                     alcancados as f64 * 100.0 / total_trios as f64
@@ -4302,7 +4422,7 @@ mod tests {
                     println!("  asas órbita {oi}: sem árvore");
                     continue;
                 }
-                let alcancados = arvore.iter().filter(|(_, m)| *m != u8::MAX).count();
+                let alcancados = arvore.iter().filter(|(_, m, _)| *m != u8::MAX).count();
                 println!(
                     "  asas órbita {oi}: {alcancados} de {total_trios} ({:.0}%)",
                     alcancados as f64 * 100.0 / total_trios as f64
@@ -4351,6 +4471,54 @@ mod tests {
             }
         }
         println!("\nTOTAL 6x6: {total:.1}s, {movs} movimentos");
+    }
+
+    /// Anatomia do 3-ciclo: cada ciclo custa |B| + 2|V| (base pura + conjugacao
+    /// de ida e volta). Mede |B| por orbita e a distribuicao de |V| sobre todos
+    /// os trios alcancaveis — e o mapa para encurtar o ciclo em si.
+    #[test]
+    #[ignore = "diagnóstico: anatomia do 3-ciclo"]
+    fn anatomia_do_3ciclo() {
+        for n in [5usize, 6, 7] {
+            let cn = cuben(n);
+            println!("\nN={n}:");
+            for (nome, bases, arvores) in [
+                ("centros", &cn.base3, &cn.triple_trees),
+                ("asas", &cn.wbase3, &cn.wing_trees),
+            ] {
+                for (oi, b) in bases.iter().enumerate() {
+                    let Some(b) = b else { continue };
+                    let arv = &arvores[oi];
+                    if arv.is_empty() {
+                        continue;
+                    }
+                    // profundidade de cada trio alcancavel
+                    let mut profs: Vec<usize> = Vec::new();
+                    for i in 0..arv.len() {
+                        if arv[i].1 >= u8::MAX - 1 {
+                            continue; // raiz ou inalcancavel
+                        }
+                        let mut d = 0;
+                        let mut a = i;
+                        while arv[a].1 != u8::MAX - 1 {
+                            d += 1;
+                            a = arv[a].0 as usize;
+                        }
+                        profs.push(d);
+                    }
+                    profs.sort_unstable();
+                    let media = profs.iter().sum::<usize>() as f64 / profs.len().max(1) as f64;
+                    let mediana = profs.get(profs.len() / 2).copied().unwrap_or(0);
+                    let max = profs.last().copied().unwrap_or(0);
+                    println!(
+                        "  {nome} orbita {oi}: |B|={} |V| media={media:.1} mediana={mediana} \
+                         max={max} => ciclo tipico {:.0} movimentos",
+                        b.len(),
+                        b.len() as f64 + 2.0 * media
+                    );
+                }
+            }
+        }
     }
 
     /// Raio-X do COMPRIMENTO: para onde vao os movimentos, por fase, nos tres
