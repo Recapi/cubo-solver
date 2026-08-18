@@ -517,6 +517,14 @@ pub fn solve_n_prog(
                 if lote_vivo && !so_orientacao && count <= 10 {
                     let antes: Vec<usize> =
                         (0..n_worb).map(|o| cn.grouped_count(&cs, o)).collect();
+                    // TENTADO E REVERTIDO (A/B com CUBEN_WORKERS=1, 6 casos):
+                    // contar o ganho SOMADO nas duas orbitas — a fatia mexe nas
+                    // duas — e reviver o lote apos dois pares fechados deram
+                    // 3754 movimentos, exatamente o mesmo da base. As variacoes
+                    // que apareciam em rodadas paralelas (3611/3680/3704) eram
+                    // ruido de thread. O gargalo das asas nao esta na taxa de
+                    // acerto do lote: esta no 3-ciclo, que faz 126 dos 168 pares
+                    // a 16.7 mov/par.
                     let goal_lote = |s: &SN| {
                         cn.c_centers_solved(s, n_corb, &[])
                             && cn.grouped_count(s, oi) >= count + 2
@@ -892,9 +900,14 @@ pub fn solve_n_prog(
                     &cube3,
                     t,
                     SolveParams {
+                        // Alvo abaixo do teto: com target 21 a busca parava na
+                        // primeira solucao aceitavel; com 18 ela gasta o
+                        // orcamento melhorando. O orcamento cai de 2s para 0.6s
+                        // porque o 3x3 sao ~20 movimentos de uma solucao de 300
+                        // a 900 — nao vale segundos.
                         max_len: 21,
-                        target_len: 21,
-                        timeout_ms: 2000,
+                        target_len: 18,
+                        timeout_ms: 600,
                         min_ms: 0,
                         threads: search::default_threads(),
                     },

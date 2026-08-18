@@ -1,8 +1,10 @@
 # Guia do projeto
 
 Solver de cubo mágico (2×2 a 7×7) com servidor e algoritmos em Rust, front-end
-em HTML/CSS/JS embutido no binário (`include_str!`). Este arquivo é o que
-alguém precisa saber antes de mexer aqui — o README explica o que o projeto
+em HTML/CSS/JS embutido no binário (`include_str!`). Hoje resolve, em média:
+5×5 em ~300 movimentos e 0,5 s; 6×6 em ~640 e 2,5 s; 7×7 em ~920 e 3,5 s.
+
+Este arquivo é o que alguém precisa saber antes de mexer aqui — o README explica o que o projeto
 faz; este guia explica como trabalhar nele sem repetir os erros já cometidos.
 
 ## Rodar e testar
@@ -10,7 +12,7 @@ faz; este guia explica como trabalhar nele sem repetir os erros já cometidos.
 ```powershell
 .\iniciar.bat          # compila, sobe em http://localhost:8080 e abre o navegador
 .\iniciar.bat 3000     # outra porta
-cargo test --release   # suíte padrão: 42 testes, ~113 s
+cargo test --release   # suíte padrão: 46 testes, ~75 s
 cargo test --release -- --ignored   # pesados: reduções exaustivas, diagnósticos, régua
 ```
 
@@ -77,36 +79,42 @@ genérica entra só como rede de segurança, depois dos degraus construtivos.
 | `partial.rs` | quais cores ainda cabem numa casa (preenchimento guiado) |
 | `main.rs` | servidor axum, endpoints e a suíte de testes |
 
+## Paridades: corrigidas no lugar, nunca refazendo
+
+Um cubo grande esbarra em três paridades, e todas se resolvem **no lugar** —
+nenhuma delas refaz o cubo. Antes, cada uma custava remontar centros e as 12
+arestas; hoje custa de 7 a 15 movimentos.
+
+| paridade | quando | correção |
+|---|---|---|
+| OLL do mapa 3×3 (aresta virada) | cubos pares | `oll_alg`, 15 mov |
+| PLL do mapa 3×3 (duas peças trocadas) | cubos pares | `pll_alg`, 7 mov |
+| aresta travada no agrupamento | ímpares (e par na órbita interna) | `wing_swap_alg`, 15 mov, conjugada até a aresta |
+
+Todas são **certificadas por simulação no build**, e o critério é o mesmo: os
+centros ficam intactos e as órbitas continuam agrupadas. Para as do 3×3, quem
+julga é o próprio `to_cubie` que recusaria a redução — aplicada ao cubo
+resolvido, a sequência tem de produzir exatamente o erro que corrige (paridade
+é invariante de dois estados, então o que cria o erro num cubo bom o cancela
+num cubo ruim).
+
+Duas armadilhas já pagas, registradas nos comentários: exigir que a correção
+mantenha as **peças do meio** fixas barra justamente o algoritmo que funciona
+(os meios podem permutar, desde que a aresta continue coerente); e a largura do
+algoritmo decide **qual órbita** ele afeta, por isso a certificação é por
+órbita.
+
 ## O que está em aberto
 
-- **O 6×6 é hoje o mais caro, e o custo tem nome: recomeço.** Medido em 6 casos
-  (`diagnostico_6x6_pipeline`), o tempo vai quase todo em refazer o pipeline
-  inteiro quando a paridade das asas exige uma sequência de sinal ímpar — que
-  mexe nos centros. Um caso chegou a 8 tentativas, cada uma remontando centros
-  (~3 s) e reagrupando as 12 arestas. Os casos que fecham na primeira tentativa
-  levam ~3,5 s; os que recomeçam, 15 s ou mais. O caminho é consertar a
-  paridade **no lugar** (como já se faz com a sequência certificada quando tudo
-  está agrupado) em vez de descartar o trabalho.
-- Não adianta trocar a correção de paridade por uma "mais correta": a que vira
-  a aresta inteira (largura 3 no 6×6, coerente nas duas órbitas) foi medida e
-  custa 96 s onde a atual custa 38 s. Com 11 pares formados quem destrava o
-  agrupamento é a *perturbação*, não a troca de paridade — e a coerente não
-  perturba nada. Detalhes no comentário do `flip_alg` em `cuben.rs`.
-- As soluções ainda são longas (~377 no 5×5, ~739 no 6×6, ~1038 no 7×7)
-  contra ~200 de um humano. O raio-X (`raio_x_do_comprimento`, --ignored)
-  mostra a divisão por fase; as linhas `CGASTO`/`WGASTO` (CUBEN_DEBUG=1)
-  dizem quem produz os movimentos e a que custo por peça/par. A receita que
-  rendeu três vezes: cadeia (o 3-ciclo cujo terceiro vértice é a casa-lar do
-  conteúdo deslocado) + pool de até 16 candidatos aceitos ATRAVÉS dos alvos,
-  escolhendo por peças/pares, depois comprimento. Asas: 19,2 → 16,5 mov/par.
-  O próximo salto grande pede outro método: fatia-encaixa em lote (várias
-  arestas por fatia), como um humano faz — as asas ainda custam 16,5 contra
-  ~10 de um humano.
-- A simplificação final atribui movimentos às etapas pelo índice da lista já
-  encurtada (`etapa_de.get(i)` em `cuben.rs`), então após o primeiro
-  cancelamento os rótulos deslizam — a etapa "Resolver como 3x3" chega a
-  exibir 0 movimentos. Só afeta rótulo/interface, não a solução (verificada
-  por replay).
+- **As soluções ainda são longas** (~300 no 5×5, ~630 no 6×6, ~900 no 7×7)
+  contra ~200/400/600 de um humano. O raio-X (`raio_x_do_comprimento`) mostra
+  a divisão por fase; as linhas `CGASTO`/`WGASTO` (`CUBEN_DEBUG=1`) dizem quem
+  produz os movimentos e a que custo por peça/par. Hoje o gargalo é o 3-ciclo
+  cirúrgico das asas: faz 126 dos 168 pares a **16,7 movimentos por par**,
+  contra ~10 de um humano. O próximo salto pede outro método — freeslice de
+  verdade, várias arestas por par de fatias —, não mais ajuste no que existe.
+- Os centros do 7×7 são ~50% do comprimento, a 5,8 mov/peça. A cadeia fechada
+  (3 peças por ciclo) já está lá; passar disso pede construção de barras.
 - O 4×4 dedicado leva ~65 s por cubo (busca IDA* até profundidade 13 nos
   centros). O caminho genérico resolve o mesmo em segundos, com solução mais
   longa; trazer o 3-ciclo construído para dentro do `cube4.rs` daria os dois.
