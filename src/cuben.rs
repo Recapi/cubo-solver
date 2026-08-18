@@ -129,6 +129,16 @@ pub fn debug_level() -> u8 {
     std::env::var("CUBEN_DEBUG").ok().and_then(|v| v.parse().ok()).unwrap_or(0)
 }
 
+/// Threads das buscas paralelas. Sob `cargo test` os testes rodam em paralelo
+/// e cada busca abrindo 12 threads faz todos disputarem os mesmos nucleos —
+/// medido: soma de 34s isolados virava 392s na suite. Em teste usamos poucas.
+fn n_workers() -> usize {
+    if cfg!(test) {
+        return 2;
+    }
+    std::thread::available_parallelism().map(|x| x.get()).unwrap_or(4).clamp(1, 12)
+}
+
 #[cfg(test)]
 pub fn solve_n(n: usize, input: &str, t: &Tables) -> Result<SolveN, String> {
     solve_n_prog(n, input, t, None)
@@ -525,11 +535,12 @@ pub fn solve_n_prog(
                             .unwrap_or_else(|| "(nada)".into()),
                         cn.render(&state, &letters)
                     );
-                } else if dbg >= 1 && (found.is_none() || t0.elapsed().as_secs_f64() > 2.0) {
+                } else if dbg >= 1 {
+                    // tally: qual degrau resolveu e quanto custou
                     eprintln!(
-                        "asas orbita {oi} count {count}: {step} {:?} em {:.2}s",
-                        found.as_ref().map(|q| q.len()),
-                        t0.elapsed().as_secs_f64()
+                        "DEGRAU {step} {:.3}s (orbita {oi}, {count}/12, achou={})",
+                        t0.elapsed().as_secs_f64(),
+                        found.is_some()
                     );
                 }
 
@@ -1069,7 +1080,9 @@ impl CubeN {
     // -----------------------------------------------------------------
 
     fn build(n: usize) -> CubeN {
-        assert!((5..=7).contains(&n));
+        // O 4x4 se encaixa na mesma construcao: 2 profundidades, 36 movimentos,
+        // uma orbita de centros e uma de asas, sem arestas do meio.
+        assert!((4..=7).contains(&n));
         let n_facelets = 6 * n * n;
         // profundidade maxima de wide: inclui a fatia central nos impares
         // (5x5 precisa de 3Rw; sem ela o grupo gerado nao cobre o cubo todo)
@@ -2116,10 +2129,7 @@ impl CubeN {
         }
         // conjugacoes em paralelo: o primeiro achado vence
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        let workers = std::thread::available_parallelism()
-            .map(|x| x.get())
-            .unwrap_or(4)
-            .clamp(1, 12);
+        let workers = n_workers();
         for nv in 1..=niveis {
             let found: Mutex<Option<Vec<usize>>> = Mutex::new(None);
             let stop = AtomicBool::new(false);
@@ -2202,10 +2212,7 @@ impl CubeN {
             return None;
         }
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        let workers = std::thread::available_parallelism()
-            .map(|x| x.get())
-            .unwrap_or(4)
-            .clamp(1, 12);
+        let workers = n_workers();
         let found: Mutex<Option<Vec<usize>>> = Mutex::new(None);
         let stop = AtomicBool::new(false);
         let cursor = AtomicUsize::new(0);
@@ -2243,36 +2250,62 @@ impl CubeN {
     /// melhoram e a varredura deles custa milissegundos — por isso ela vem
     /// antes de qualquer enumeracao generica.
     fn improve_centers(&self, cs: &SN, total: usize) -> Option<Vec<usize>> {
+        let dbg = debug_level();
+        let marca = |nome: &str, t0: std::time::Instant, achou: bool| {
+            if dbg >= 1 {
+                eprintln!("CDEGRAU {nome} {:.3}s achou={achou}", t0.elapsed().as_secs_f64());
+            }
+        };
         let goal = |s: &SN| self.center_total(s) > total;
         let h = |_: &SN| 0u8; // qualquer movimento pode melhorar: sem cota util
         let bs = self.wing_bs(false);
         // do mais barato ao mais caro; nenhuma familia foi retirada, apenas
         // reordenada, e as varreduras instantaneas vem antes das genericas
+        let t0 = std::time::Instant::now();
         for d in 1..=2usize {
             if let Some(r) = NSearch::run_at(self, cs, &goal, &h, d) {
+                marca("curta", t0, true);
                 return Some(r);
             }
         }
+        marca("curta", t0, false);
+        let t1 = std::time::Instant::now();
         for tier in [1usize, 2] {
             if let Some(r) = self.macro_search(cs, &goal, &bs, tier, None) {
+                marca("macro12", t1, true);
                 return Some(self.trim_tail(cs, r, &goal));
             }
         }
-        if let Some(r) = self.commutator_scan(cs, &goal, 1) {
-            return Some(self.trim_tail(cs, r, &goal));
-        }
-        for prof in 1..=4usize {
-            if let Some(r) = self.slice_face_macro(cs, &goal, prof) {
-                return Some(self.trim_tail(cs, r, &goal));
-            }
-        }
-        if let Some(r) = self.macro_search(cs, &goal, &bs, 3, None) {
-            return Some(self.trim_tail(cs, r, &goal));
-        }
-        // garantia: 3-ciclo cirurgico construido, sempre progride
+        marca("macro12", t1, false);
+        // Medido no 7x7: o 3-ciclo construido resolve 94 de 165 casos em tempo
+        // desprezivel, enquanto `macro3` gastava 706s para acertar 10 de 175.
+        // Por isso a construcao vem logo depois dos degraus baratos.
+        let t5 = std::time::Instant::now();
         if let Some(r) = self.constructive_center_step(cs) {
+            marca("3-ciclo construido", t5, true);
             return Some(r);
         }
+        marca("3-ciclo construido", t5, false);
+        let t2 = std::time::Instant::now();
+        if let Some(r) = self.commutator_scan(cs, &goal, 1) {
+            marca("comutador1", t2, true);
+            return Some(self.trim_tail(cs, r, &goal));
+        }
+        marca("comutador1", t2, false);
+        let t3 = std::time::Instant::now();
+        for prof in 1..=4usize {
+            if let Some(r) = self.slice_face_macro(cs, &goal, prof) {
+                marca("fatia-encaixa", t3, true);
+                return Some(self.trim_tail(cs, r, &goal));
+            }
+        }
+        marca("fatia-encaixa", t3, false);
+        let t4 = std::time::Instant::now();
+        if let Some(r) = self.macro_search(cs, &goal, &bs, 3, None) {
+            marca("macro3", t4, true);
+            return Some(self.trim_tail(cs, r, &goal));
+        }
+        marca("macro3", t4, false);
         if let Some(r) = self.improve_lookahead(cs, total) {
             return Some(r);
         }
@@ -2526,10 +2559,7 @@ impl CubeN {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         let cursor = AtomicUsize::new(0);
         let pronto = AtomicBool::new(false);
-        let workers = std::thread::available_parallelism()
-            .map(|x| x.get())
-            .unwrap_or(4)
-            .clamp(1, 12);
+        let workers = n_workers();
         std::thread::scope(|sc| {
             for _ in 0..workers {
                 let (cursor, pronto, resultado) = (&cursor, &pronto, &resultado);
@@ -2707,10 +2737,7 @@ impl CubeN {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         let cursor = AtomicUsize::new(0);
         let pronto = AtomicBool::new(false);
-        let workers = std::thread::available_parallelism()
-            .map(|x| x.get())
-            .unwrap_or(4)
-            .clamp(1, 12);
+        let workers = n_workers();
         std::thread::scope(|sc| {
             for _ in 0..workers {
                 let (cursor, pronto, resultado) = (&cursor, &pronto, &resultado);
@@ -3124,10 +3151,7 @@ impl CubeN {
         let found: Mutex<Option<Vec<usize>>> = Mutex::new(None);
         let stop = AtomicBool::new(false);
         let cursor = AtomicUsize::new(0);
-        let workers = std::thread::available_parallelism()
-            .map(|x| x.get())
-            .unwrap_or(4)
-            .clamp(1, 12);
+        let workers = n_workers();
         std::thread::scope(|sc| {
             for _ in 0..workers {
                 let (found, stop, cursor) = (&found, &stop, &cursor);
@@ -3270,10 +3294,7 @@ impl CubeN {
         }
         // niveis 2 e 3: paralelo por m1, o primeiro achado vence
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-        let workers = std::thread::available_parallelism()
-            .map(|x| x.get())
-            .unwrap_or(4)
-            .clamp(1, 12);
+        let workers = n_workers();
         for tier3 in [false, true] {
             if (tier3 && max_tier < 3) || (!tier3 && max_tier < 2) {
                 continue;
@@ -3504,10 +3525,7 @@ where
         if d == 0 {
             return if goal(start) { Some(Vec::new()) } else { None };
         }
-        let workers = std::thread::available_parallelism()
-            .map(|x| x.get())
-            .unwrap_or(4)
-            .clamp(1, 12);
+        let workers = n_workers();
         let found: Mutex<Option<Vec<usize>>> = Mutex::new(None);
         let stop = AtomicBool::new(false);
         let cursor = AtomicUsize::new(0);
@@ -3571,6 +3589,52 @@ mod tests {
             k += 1;
         }
         st
+    }
+
+    /// O 4x4 pela mesma construcao generica: e o solver mais antigo do projeto
+    /// (busca IDA* ate profundidade 13 nos centros) e custa ~65s por cubo.
+    /// Compara corretude e tempo com o caminho novo.
+    #[test]
+    fn cubo4_pela_construcao_generica() {
+        let tables = Tables::build();
+        let cn = cuben(4);
+        assert_eq!(cn.n_moves, 36, "4x4 deveria ter 36 movimentos");
+        assert_eq!(cn.center_orbits.len(), 1);
+        assert_eq!(cn.wing_orbits.len(), 1);
+        assert!(cn.midge_facelets.is_none(), "4x4 nao tem aresta do meio");
+        assert!(cn.base3[0].is_some(), "sem 3-ciclo puro de centro no 4x4");
+        assert!(cn.wbase3[0].is_some(), "sem 3-ciclo puro de asa no 4x4");
+
+        let mut seed = 0xfeed_beef_1234_5678u64;
+        for caso in 0..2 {
+            let mut st = cn.solved();
+            let mut last = usize::MAX;
+            let mut k = 0;
+            while k < 40 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                let m = ((seed >> 33) % cn.n_moves as u64) as usize;
+                if m / 3 == last {
+                    continue;
+                }
+                last = m / 3;
+                cn.apply(&mut st, m);
+                k += 1;
+            }
+            let entrada = cn.render(&st, &['U', 'R', 'F', 'D', 'L', 'B']);
+            let t0 = std::time::Instant::now();
+            let sol = solve_n(4, &entrada, &tables).expect("resolver 4x4");
+            let gasto = t0.elapsed().as_secs_f64();
+            let ultimo = sol.states.last().unwrap();
+            let ch: Vec<char> = ultimo.chars().collect();
+            for f in 0..6 {
+                let c0 = ch[f * 16];
+                assert!(
+                    (0..16).all(|q| ch[f * 16 + q] == c0),
+                    "caso {caso}: face {f} nao uniforme"
+                );
+            }
+            println!("4x4 generico caso {caso}: {} movimentos em {gasto:.1}s", sol.length);
+        }
     }
 
     /// Replica um caso exato: `CUBEN_STATE=<planificacao>` (o tamanho sai do
