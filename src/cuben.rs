@@ -3156,7 +3156,71 @@ impl CubeN {
                 }
             }
         }
-        melhor
+        if melhor.is_some() {
+            return melhor;
+        }
+        // Nenhum trio direto serviu: o grupo nao alcanca todos os trios em
+        // algumas orbitas (as oblicuas tem classes separadas). Faz em DOIS
+        // saltos — leva a peca a uma casa intermediaria e de la ao destino.
+        // Sem isso o solver empacava perto do fim e reiniciava tudo.
+        // O teto existe porque a varredura completa sao ~331 mil combinacoes:
+        // sem ele a suite saiu de 114s para 1461s.
+        let mut avaliadas = 0usize;
+        'dois_saltos: for oi in 0..self.center_orbits.len() {
+            if self.base3[oi].is_none() {
+                continue;
+            }
+            let cor = |s: &SN, i: usize| s.cent[oi * 24 + i] as usize;
+            let face = |i: usize| i / 4;
+            let erradas: Vec<usize> = (0..24).filter(|&i| cor(cs, i) != face(i)).collect();
+            for &p in &erradas {
+                let destino = cor(cs, p);
+                for &q in erradas.iter().filter(|&&q| q != p && face(q) == destino) {
+                    for m in 0..24usize {
+                        if m == p || m == q {
+                            continue;
+                        }
+                        for r1 in 0..24usize {
+                            if r1 == p || r1 == m {
+                                continue;
+                            }
+                            let Some(s1) = self.cycle_triple(oi, [p as u8, m as u8, r1 as u8])
+                            else {
+                                continue;
+                            };
+                            let mut e1 = *cs;
+                            for &mv in &s1 {
+                                e1 = self.capply(&e1, mv);
+                            }
+                            for r2 in 0..24usize {
+                                if r2 == m || r2 == q {
+                                    continue;
+                                }
+                                avaliadas += 1;
+                                if avaliadas > 4000 {
+                                    break 'dois_saltos;
+                                }
+                                let Some(s2) =
+                                    self.cycle_triple(oi, [m as u8, q as u8, r2 as u8])
+                                else {
+                                    continue;
+                                };
+                                let mut e2 = e1;
+                                for &mv in &s2 {
+                                    e2 = self.capply(&e2, mv);
+                                }
+                                if self.center_total(&e2) > total {
+                                    let mut junta = s1.clone();
+                                    junta.extend(s2);
+                                    return Some(junta);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Familia "fatia, encaixa, desfaz": `S · A · S'`, com S uma fatia e A uma

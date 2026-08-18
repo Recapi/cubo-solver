@@ -98,8 +98,9 @@
       var b = document.createElement("div");
       b.className = "swatch c-" + f + (f === selected ? " sel" : "");
       b.dataset.face = f;
-      b.title = "cor da face " + FACE_LABEL[f];
-      b.innerHTML = "<span>" + FACE_LABEL[f] + "</span>";
+      var tecla = FACES.indexOf(f) + 1;
+      b.title = "cor da face " + FACE_LABEL[f] + " (tecla " + tecla + ")";
+      b.innerHTML = "<b class=\"tecla\">" + tecla + "</b><span>" + FACE_LABEL[f] + "</span>";
       b.addEventListener("click", function () {
         if (guided) {
           // no modo guiado, clicar numa cor liberada pinta o adesivo-alvo
@@ -685,41 +686,94 @@
     });
   }
 
-  function renderChipsSimple(names) {
+  // Lista de movimentos: com 1183 fichas o navegador congelava só de montar o
+  // DOM. Guardamos a receita e desenhamos uma janela ao redor do movimento
+  // atual, e só quando a lista está aberta.
+  var listaSpec = null; // { nomes: [], classe: fn(i) -> string, titulo: fn(i) }
+  var listaJanela = { de: -1, ate: -1 };
+  var JANELA = 150;
+
+  function definirLista(nomes, classe, titulo) {
+    listaSpec = { nomes: nomes, classe: classe, titulo: titulo };
+    listaJanela = { de: -1, ate: -1 };
+    marcarLista(nomes.length);
+    desenharLista();
+  }
+
+  function desenharLista() {
     var box = $("moves");
+    if (!listaSpec || !$("lista-wrap").open) { box.innerHTML = ""; return; }
+    var n = listaSpec.nomes.length;
+    var de = Math.max(0, Math.min(step - JANELA / 3, n - JANELA) | 0);
+    if (de < 0) de = 0;
+    var ate = Math.min(n, de + JANELA);
+    if (de === listaJanela.de && ate === listaJanela.ate) return; // já desenhada
+    listaJanela = { de: de, ate: ate };
     box.innerHTML = "";
-    names.forEach(function (m, i) {
+    if (de > 0) box.appendChild(avisoLista("… " + de + " movimentos antes"));
+    for (var i = de; i < ate; i++) {
       var b = document.createElement("button");
-      b.className = "mv";
-      b.textContent = m;
-      b.addEventListener("click", function () { stopPlay(); jump(i); });
+      b.className = "mv " + listaSpec.classe(i);
+      b.textContent = listaSpec.nomes[i];
+      b.title = listaSpec.titulo(i);
+      (function (k) {
+        b.addEventListener("click", function () { stopPlay(); jump(k); });
+      })(i);
       box.appendChild(b);
+    }
+    if (ate < n) box.appendChild(avisoLista("… mais " + (n - ate)));
+  }
+
+  function avisoLista(txt) {
+    var s = document.createElement("span");
+    s.className = "mv-aviso";
+    s.textContent = txt;
+    return s;
+  }
+
+  function renderChipsSimple(names) {
+    definirLista(names, function () { return ""; }, function (i) {
+      return "Movimento " + (i + 1);
     });
   }
 
   function renderStagesResult(j, holdHtml) {
-    var partes = ["<b>" + j.length + " movimentos</b>"];
+    // Com muitas etapas (cubos grandes chegam a 14) a linha vira uma parede de
+    // texto: agrupa etapas de mesmo nome e resume o resto.
+    var resumo = [];
     j.stages.forEach(function (s) {
-      partes.push(s.name.split(" — ")[0].split(" (")[0] + " " + s.moves.length);
+      var nome = s.name.split(" — ")[0].split(" (")[0];
+      var ult = resumo[resumo.length - 1];
+      if (ult && ult.nome === nome) { ult.mov += s.moves.length; ult.n++; }
+      else resumo.push({ nome: nome, mov: s.moves.length, n: 1 });
     });
-    partes.push(j.time_ms + " ms");
+    var partes = ["<b>" + j.length + " movimentos</b>"];
+    if (resumo.length <= 5) {
+      resumo.forEach(function (r) { partes.push(r.nome + " " + r.mov); });
+    } else {
+      partes.push(resumo.length + " etapas");
+      var maior = resumo.slice().sort(function (a, b) { return b.mov - a.mov; })[0];
+      partes.push("maior: " + maior.nome + " (" + maior.mov + ")");
+    }
+    partes.push((j.time_ms / 1000).toFixed(1) + " s");
     $("result").innerHTML = partes.join(" &middot; ") + (holdHtml || "");
-    var box = $("moves");
-    box.innerHTML = "";
-    var flat = 0;
-    j.stages.forEach(function (s, si) {
-      s.moves.forEach(function (m) {
-        var b = document.createElement("button");
-        b.className = "mv stg-" + (si % 4);
-        b.textContent = m;
-        b.title = s.name + " — movimento " + (flat + 1);
-        (function (i) {
-          b.addEventListener("click", function () { stopPlay(); jump(i); });
-        })(flat);
-        box.appendChild(b);
-        flat++;
-      });
-    });
+    var nomes = [];
+    j.stages.forEach(function (s) { s.moves.forEach(function (m) { nomes.push(m); }); });
+    var stageOf = j.stage_of || [];
+    definirLista(
+      nomes,
+      function (i) { return "stg-" + ((stageOf[i] || 0) % 4); },
+      function (i) {
+        var st = j.stages[stageOf[i]];
+        return (st ? st.name + " — " : "") + "movimento " + (i + 1);
+      }
+    );
+  }
+
+  /** Rótulo da lista fechada, para o usuário saber o que há dentro. */
+  function marcarLista(total) {
+    $("lista-sum").textContent = "Ver todos os " + total + " movimentos";
+    $("lista-wrap").open = total <= 40; // solução curta cabe aberta
   }
 
   function solveLabel() {
@@ -991,16 +1045,11 @@
     $("result").innerHTML = parts.join(" &middot; ") +
       (j.hold ? "<br><b>" + j.hold + "</b> O cubo 3D já está nessa orientação." : "");
 
-    var box = $("moves");
-    box.innerHTML = "";
-    j.solution.forEach(function (m, i) {
-      var b = document.createElement("button");
-      b.className = "mv" + (i >= j.phase1 ? " p2" : "");
-      b.textContent = m;
-      b.title = "Movimento " + (i + 1) + ": " + moveDesc(m);
-      b.addEventListener("click", function () { stopPlay(); jump(i); });
-      box.appendChild(b);
-    });
+    definirLista(
+      j.solution,
+      function (i) { return i >= j.phase1 ? "p2" : ""; },
+      function (i) { return "Movimento " + (i + 1) + ": " + moveDesc(j.solution[i]); }
+    );
 
     $("player").classList.remove("hidden");
     $("move-now").classList.remove("hidden");
@@ -1020,28 +1069,62 @@
     draw(solution.states[step]);
     $("p-range").value = step;
     $("p-counter").textContent = step + " / " + solution.length;
-    Array.prototype.forEach.call($("moves").children, function (el, k) {
-      el.classList.toggle("done", k < step);
-      el.classList.toggle("now", k === step);
-    });
+    // acompanha o movimento atual na lista, sem precisar rolar à mão
+    if ($("lista-wrap").open) {
+      desenharLista();
+      var base = listaJanela.de < 0 ? 0 : listaJanela.de;
+      var idx = 0;
+      Array.prototype.forEach.call($("moves").children, function (el) {
+        if (!el.classList.contains("mv")) return; // avisos "… N antes"
+        var k = base + idx;
+        idx++;
+        el.classList.toggle("done", k < step);
+        el.classList.toggle("now", k === step);
+      });
+      var atual = $("moves").querySelector(".mv.now");
+      if (atual) atual.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
 
     var mn = $("move-now");
+    var pct = solution.length ? (step / solution.length) * 100 : 0;
+    $("mn-barra").style.width = pct.toFixed(1) + "%";
     if (step < solution.length) {
       var name = solution.solution[step];
       mn.classList.remove("done");
       $("mn-chip").textContent = name;
-      var titulo = "Movimento " + (step + 1) + " de " + solution.length;
-      if (solution.stageOf) {
-        titulo = solution.stages[solution.stageOf[step]].name + " · " + titulo;
-      }
-      $("mn-title").textContent = titulo;
+      $("mn-title").textContent = "Movimento " + (step + 1) + " de " + solution.length;
       $("mn-text").textContent = moveDesc(name);
+      $("mn-etapa").textContent = etapaAtual(step);
+      $("mn-prox").textContent = solution.solution[step + 1] || "fim";
     } else {
       mn.classList.add("done");
       $("mn-chip").textContent = "✓";
       $("mn-title").textContent = "Pronto!";
       $("mn-text").textContent = "Cubo resolvido em " + solution.length + " movimentos.";
+      $("mn-etapa").textContent = "";
+      $("mn-prox").textContent = "—";
+      $("mn-barra").style.width = "100%";
     }
+  }
+
+  /** "Etapa 3 de 14 · Agrupar aresta cima-direita (12 de 34)". No 3x3 direto
+   *  não há etapas nomeadas, mas o algoritmo tem duas fases bem definidas —
+   *  usá-las dá a noção de onde se está. */
+  function etapaAtual(i) {
+    if (!solution.stageOf || !solution.stages) {
+      if (typeof solution.phase1 === "number" && solution.phase1 > 0) {
+        return i < solution.phase1
+          ? "Fase 1 de 2 · orienta as peças (" + (i + 1) + " de " + solution.phase1 + ")"
+          : "Fase 2 de 2 · resolve o resto (" + (i - solution.phase1 + 1) + " de " +
+            (solution.length - solution.phase1) + ")";
+      }
+      return "Resolvendo — " + Math.round((i / solution.length) * 100) + "% dos movimentos";
+    }
+    var si = solution.stageOf[i];
+    var st = solution.stages[si];
+    var inicio = solution.stageOf.indexOf(si);
+    return "Etapa " + (si + 1) + " de " + solution.stages.length + " · " + st.name +
+      " (" + (i - inicio + 1) + " de " + st.moves.length + ")";
   }
 
   /** Pulo direto (slider, clique num movimento, inicio/fim): sem animacao. */
@@ -1081,6 +1164,31 @@
       stepForward();
     }, passoMs());
   }
+
+  // Teclas 1 a 6 pintam no guiado (bem mais rápido que mirar o mouse na cor):
+  // a ordem é a mesma da paleta — 1 branca, 2 vermelha, 3 verde, 4 amarela,
+  // 5 laranja, 6 azul. Backspace desfaz.
+  document.addEventListener("keydown", function (e) {
+    if (!guided) return;
+    var alvo = e.target;
+    if (alvo && (alvo.tagName === "INPUT" || alvo.tagName === "SELECT")) return;
+    if (e.key === "Backspace") { e.preventDefault(); guidedUndo(); return; }
+    var n = "123456".indexOf(e.key);
+    if (n < 0) return;
+    e.preventDefault();
+    var sw = $("palette").children[n];
+    if (!sw) return;
+    if (sw.classList.contains("off")) {
+      say("A cor " + FACE_LABEL[FACES[n]] + " não cabe nesse adesivo.", "err");
+      sw.classList.add("recusada");
+      setTimeout(function () { sw.classList.remove("recusada"); }, 300);
+      return;
+    }
+    guidedPaint(FACES[n]);
+  });
+
+  // a lista longa só é desenhada quando aberta (montar 1183 fichas travava a página)
+  $("lista-wrap").addEventListener("toggle", function () { desenharLista(); });
 
   // --------------------------------------------------------------- init
   buildPalette();

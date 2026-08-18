@@ -87,6 +87,20 @@ h1 { font-size: 21px; margin: 0; letter-spacing: -.2px; }
 .swatch.sel { border-color: var(--fg); box-shadow: 0 0 0 3px rgba(47,129,247,.35); }
 /* cor impossivel na posicao atual (modo guiado) */
 .swatch.off { opacity: .15; pointer-events: none; transform: none; filter: grayscale(.6); }
+/* numero da tecla (1 a 6): digitar e bem mais rapido que mirar o mouse */
+.swatch .tecla {
+  position: absolute; top: 2px; left: 5px; font-size: 11px; font-weight: 700;
+  color: rgba(0,0,0,.55); text-shadow: 0 1px 0 rgba(255,255,255,.35);
+  pointer-events: none;
+}
+.swatch.recusada { animation: recusa .3s ease; }
+@keyframes recusa {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-4px); }
+  75% { transform: translateX(4px); }
+}
+/* aviso de corte na lista longa de movimentos */
+.mv-aviso { font-size: 12px; color: var(--fg-dim); align-self: center; padding: 0 4px; }
 .swatch span {
   position: absolute; inset: auto 0 -18px; text-align: center;
   font-size: 10px; color: var(--fg-dim);
@@ -216,10 +230,35 @@ select {
   min-width: 52px; text-align: center; padding: 8px 10px; flex: none;
 }
 .move-now.done .mn-chip { background: var(--ok); }
+.mn-body { flex: 1 1 auto; min-width: 0; }
 .mn-title { font-size: 12px; color: var(--fg-dim); }
 .mn-text { font-size: 14px; }
+/* etapa atual: o que o solver esta fazendo agora (cruz, F2L, centros...) */
+.mn-etapa {
+  font-size: 12px; color: var(--accent); font-weight: 600; margin-top: 3px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.barra { height: 4px; background: var(--line2); border-radius: 3px; margin-top: 6px; overflow: hidden; }
+.barra-fill { height: 100%; width: 0; background: var(--accent); transition: width .15s linear; }
+/* proximo movimento, para a pessoa se antecipar */
+.mn-lado { flex: none; text-align: center; opacity: .75; }
+.mn-prox-rot { display: block; font-size: 10px; color: var(--fg-dim); text-transform: uppercase; letter-spacing: .5px; }
+.mn-prox {
+  font-family: ui-monospace, Consolas, monospace; font-size: 15px; font-weight: 600;
+  color: var(--fg-dim);
+}
 
-.moves { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+/* Lista completa fechada por padrao: com mais de mil movimentos ela tomava a
+   tela inteira e empurrava o player para fora. */
+.lista-mov { margin: 10px 0 4px; }
+.lista-mov > summary {
+  cursor: pointer; font-size: 13px; color: var(--fg-dim); padding: 4px 0; user-select: none;
+}
+.lista-mov > summary:hover { color: var(--accent); }
+.moves {
+  display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px;
+  max-height: 190px; overflow-y: auto; padding-right: 4px;
+}
 .mv {
   font-family: ui-monospace, Consolas, monospace; font-size: 14px; font-weight: 600;
   background: var(--bg2); border: 1px solid var(--line2); color: var(--fg);

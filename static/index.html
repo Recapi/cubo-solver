@@ -146,13 +146,17 @@
 
       <div id="move-now" class="move-now hidden">
         <span class="mn-chip" id="mn-chip"></span>
-        <div>
+        <div class="mn-body">
           <div class="mn-title" id="mn-title"></div>
           <div class="mn-text" id="mn-text"></div>
+          <div class="mn-etapa" id="mn-etapa"></div>
+          <div class="barra"><div class="barra-fill" id="mn-barra"></div></div>
+        </div>
+        <div class="mn-lado">
+          <span class="mn-prox-rot">a seguir</span>
+          <span class="mn-prox" id="mn-prox"></span>
         </div>
       </div>
-
-      <div id="moves" class="moves"></div>
 
       <div id="player" class="player hidden">
         <button class="btn icon" id="p-first" title="In&iacute;cio">&#9198;</button>
@@ -163,6 +167,11 @@
         <input type="range" id="p-range" min="0" max="0" value="0">
         <span class="counter" id="p-counter">0 / 0</span>
       </div>
+
+      <details class="lista-mov" id="lista-wrap">
+        <summary id="lista-sum">Ver todos os movimentos</summary>
+        <div id="moves" class="moves"></div>
+      </details>
 
       <details class="guide">
         <summary>O que significa R, U', F2&hellip;?</summary>
