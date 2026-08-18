@@ -305,6 +305,19 @@ pub fn solve_n_prog(
                 match cn.improve_centers(&cs, total) {
                     Some(seq) => {
                         let gasto = t0.elapsed().as_secs_f64();
+                        if dbg >= 1 {
+                            // casa com a linha CDEGRAU do degrau vencedor: quem
+                            // produz os MOVIMENTOS dos centros, e a que preco
+                            let mut s2 = cs;
+                            for &m in &seq {
+                                s2 = cn.capply(&s2, m);
+                            }
+                            eprintln!(
+                                "CGASTO mov={} pecas=+{}",
+                                seq.len(),
+                                cn.center_total(&s2).saturating_sub(total)
+                            );
+                        }
                         if dbg >= 2 {
                             eprintln!(
                                 "[centros #{guard}] {total}->? via {} ({:.2}s)\n  estado: {}",
@@ -3452,6 +3465,7 @@ impl CubeN {
     fn constructive_center_step_teto(&self, cs: &SN, teto: usize) -> Option<Vec<usize>> {
         let total = self.center_total(cs);
         let mut melhor: Option<Vec<usize>> = None;
+        let mut cand: Vec<(usize, usize, Vec<usize>)> = Vec::new(); // (pecas, -len, seq)
         'orbitas: for oi in 0..self.center_orbits.len() {
             if self.base3[oi].is_none() {
                 continue;
@@ -3466,16 +3480,31 @@ impl CubeN {
             if erradas.len() < 2 {
                 continue;
             }
-            for &p in &erradas {
+            // MEDIDO (CGASTO no 7x7): este degrau produz 69% dos movimentos dos
+            // centros, a 7.9 mov/peca — e cada ciclo custa ~18 movimentos,
+            // dominados pela conjugacao. Entre os trios que melhoram, vale
+            // escolher o de sequencia mais curta; mas escolher o "melhor"
+            // varrendo tudo ja foi medido (6.6s -> 6 min), entao ha TETO: no
+            // maximo 16 candidatos que melhoram, e para.
+            'busca: for &p in &erradas {
                 let destino_p = face_da_cor(cor(p)); // face onde a peca de p pertence
                 // q: casa errada na face de destino de p
                 for &q in erradas.iter().filter(|&&q| q != p && q / 4 == destino_p) {
                     let destino_q = face_da_cor(cor(q));
-                    // r: casa na face de destino de q (errada de preferencia)
+                    // r: casa na face de destino de q. Ordem = cadeia FECHADA
+                    // primeiro (o conteudo de r pertence a face de p: o mesmo
+                    // ciclo arruma 3 pecas), depois as erradas (+2), depois o
+                    // resto. So a ORDEM muda — o aceite continua sendo o
+                    // primeiro que melhora, porque escolher o "melhor" global
+                    // ja foi medido e custou minutos (ver comentario abaixo).
+                    let fecha_ciclo = |r: usize| face_da_cor(cor(r)) == p / 4;
                     let candidatos_r = erradas
                         .iter()
                         .copied()
-                        .filter(|&r| r != p && r != q && r / 4 == destino_q)
+                        .filter(|&r| r != p && r != q && r / 4 == destino_q && fecha_ciclo(r))
+                        .chain(erradas.iter().copied().filter(|&r| {
+                            r != p && r != q && r / 4 == destino_q && !fecha_ciclo(r)
+                        }))
                         .chain(
                             (0..24).filter(|&r| r != p && r != q && r / 4 == destino_q),
                         );
@@ -3492,15 +3521,24 @@ impl CubeN {
                                 for &m in &seq {
                                     s = self.capply(&s, m);
                                 }
-                                if self.center_total(&s) > total {
-                                    melhor = Some(seq);
-                                    break 'orbitas;
+                                let t = self.center_total(&s);
+                                if t > total {
+                                    cand.push((t - total, usize::MAX - seq.len(), seq));
+                                    if cand.len() >= 16 {
+                                        break 'busca;
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+            if !cand.is_empty() {
+                break 'orbitas;
+            }
+        }
+        if let Some((_, _, seq)) = cand.into_iter().max_by_key(|c| (c.0, c.1)) {
+            melhor = Some(seq);
         }
         if melhor.is_some() {
             return melhor;
