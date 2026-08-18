@@ -94,6 +94,11 @@ pub struct CubeN {
     /// `oll_alg` vira uma aresta inteira; `pll_alg` troca duas arestas.
     oll_alg: Option<Vec<usize>>,
     pll_alg: Option<Vec<usize>>,
+    /// [orbita] sequencia que TROCA as duas asas de uma aresta, preservando
+    /// centros e meios. E a correcao que faltava aos cubos IMPARES: neles a
+    /// referencia e a peca do meio, entao uma aresta com as asas trocadas fica
+    /// desagrupada e nenhuma permutacao par a fecha. Certificada no build.
+    wing_swap_alg: Vec<Option<Vec<usize>>>,
 }
 
 /// Reescreve os giros largos de um algoritmo para a largura `w` ("Rw" -> "3Rw").
@@ -563,7 +568,31 @@ pub fn solve_n_prog(
                             continue;
                         }
                     }
-                    // sem correcao no lugar (cubo impar): refaz do inicio
+                    // Cubos IMPARES: a referencia e a peca do meio, entao a
+                    // aresta travada tem as duas asas trocadas — uma
+                    // TRANSPOSICAO, que nenhum 3-ciclo desfaz. A correcao
+                    // certificada troca exatamente isso, conjugada ate a aresta
+                    // que travou. Sem ela o solver refazia o cubo inteiro
+                    // (medido: os tres casos do 5x5 recomecavam).
+                    if flips_usados < 3 {
+                        if let Some(seq) = cn.troca_de_asas_conjugada(&cs, oi) {
+                            flips_usados += 1;
+                            if dbg >= 1 {
+                                eprintln!("asas orbita {oi}: troca de asas no lugar");
+                            }
+                            push_stage(
+                                &cn,
+                                &mut state,
+                                &mut states,
+                                &mut stages,
+                                "Paridade das arestas".into(),
+                                "Troca as duas asas de uma aresta; sem isso ela não fecha.".into(),
+                                &seq,
+                            );
+                            continue;
+                        }
+                    }
+                    // sem correcao no lugar: refaz do inicio
                     if dbg >= 1 {
                         eprintln!("asas orbita {oi}: paridade de orientação -> refazer do inicio");
                     }
@@ -1808,6 +1837,7 @@ impl CubeN {
             flip_alg: None,
             oll_alg: None,
             pll_alg: None,
+            wing_swap_alg: Vec::new(),
         };
         // 3-ciclos puros e arvores de conjugacao (precisam do resto pronto).
         // A busca custa ~30s somando os tres tamanhos, e o resultado e fixo por
@@ -1930,6 +1960,26 @@ impl CubeN {
             ],
             "duas pecas",
         );
+        // Troca de asas por orbita: a correcao dos cubos IMPARES, onde a peca
+        // do meio e a referencia. A largura do algoritmo decide qual orbita ele
+        // afeta, entao cada uma e certificada em separado.
+        cn.wing_swap_alg = (0..cn.wing_orbits.len())
+            .map(|oi| {
+                cn.certifica_troca_de_asas(
+                    &[
+                        // com a fatia pura da camada da orbita ({r} e {l})
+                        "{r} U2 {r} U2 {r} U2 {r} U2 {r}",
+                        "{r}2 B2 U2 {l} U2 {r}' U2 {r} U2 F2 {r} F2 {l}' B2 {r}2",
+                        "{r}' U2 {l} F2 {l}' F2 {r}2 U2 {r} U2 {r}' U2 F2 {r}2 F2",
+                        "{r} U2 {r} U2 {r}' U2 {r} U2 {l}' U2 {r}' U2 {r} U2 {r}' U2 {r}'",
+                        // e com giros largos, em todas as larguras
+                        "Rw' U2 Lw F2 Lw' F2 Rw2 U2 Rw U2 Rw' U2 F2 Rw2 F2",
+                        "Rw2 B2 U2 Lw U2 Rw' U2 Rw U2 F2 Rw F2 Lw' B2 Rw2",
+                    ],
+                    oi,
+                )
+            })
+            .collect();
         cn.wbase3_fontes = (0..cn.wing_orbits.len())
             .map(|oi| match &cn.wbase3[oi] {
                 Some(seq) => cn.variantes_do_ciclo(seq, false, oi),
@@ -3039,6 +3089,118 @@ impl CubeN {
                     }
                 }
             }
+        }
+        None
+    }
+
+    /// Certifica, por SIMULACAO, uma sequencia que TROCA as duas asas de uma
+    /// aresta da orbita `oi` sem tocar em mais nada relevante: centros, meios e
+    /// as demais orbitas ficam como estavam.
+    ///
+    /// E a correcao que faltava aos cubos IMPARES. Neles a referencia de cada
+    /// aresta e a peca do meio, entao duas asas trocadas deixam a aresta
+    /// desagrupada — e como isso e uma TRANSPOSICAO, nenhum 3-ciclo (que e par)
+    /// a fecha. Sem ela, o solver refazia o cubo inteiro: medido, os tres casos
+    /// do 5x5 recomecavam, um deles duas vezes.
+    fn certifica_troca_de_asas(&self, textos: &[&str], oi: usize) -> Option<Vec<usize>> {
+        let base = self.cstate_of(&self.solved());
+        let n_worb = self.wing_orbits.len();
+        // Candidatos: os textos com giros largos (em todas as larguras) mais os
+        // mesmos padroes com a FATIA PURA da camada desta orbita. A camada oi+1
+        // isolada escreve-se "(oi+2)Rw (oi+1)Rw'" — largo menos largo —, e e ela
+        // que mexe nas asas certas sem arrastar as de fora. Sem esse par, os
+        // cubos impares nao acham correcao nenhuma.
+        let fatia = |f: &str| -> String {
+            let a = if oi + 2 == 2 { format!("{f}w") } else { format!("{}{f}w", oi + 2) };
+            let b = if oi + 1 == 1 { f.to_string() } else { format!("{}{f}w", oi + 1) };
+            format!("{a} {b}'")
+        };
+        let mut candidatos: Vec<String> = Vec::new();
+        for txt in textos {
+            if txt.contains("{r}") {
+                candidatos.push(txt.replace("{r}", &fatia("R")).replace("{l}", &fatia("L")));
+            } else {
+                for w in 2..=(self.n / 2).max(2) {
+                    candidatos.push(com_largura(txt, w));
+                }
+            }
+        }
+        {
+            for txt in &candidatos {
+                let Ok(seq) = self.parse_moves(txt) else { continue };
+                let mut st = self.solved();
+                for &m in &seq {
+                    self.apply(&mut st, m);
+                }
+                let cs = self.cstate_of(&st);
+                // Centros intactos. Os MEIOS podem permutar a vontade: o que
+                // importa e a aresta continuar coerente (asas casando com o seu
+                // meio), e disso cuida a contagem de agrupadas abaixo. Exigir
+                // meios fixos barrava justamente o algoritmo que funciona —
+                // medido: no 5x5 ele da agrupados=[11] com os centros intactos,
+                // so permutando meios junto com as asas.
+                if cs.cent != base.cent || cs.mid != base.mid {
+                    continue;
+                }
+                // exatamente uma aresta desagrupada, e so na orbita alvo
+                let ok = (0..n_worb).all(|o| {
+                    let g = self.grouped_count(&cs, o);
+                    if o == oi {
+                        g == 11
+                    } else {
+                        g == 12
+                    }
+                });
+                if ok {
+                    return Some(seq);
+                }
+            }
+        }
+        None
+    }
+
+    /// A troca de asas certificada age numa aresta fixa. Quando a travada e
+    /// outra, leva-se ela ate la com giros de face INTEIRA — que nao estragam os
+    /// centros ja prontos, porque so giram cada face sobre si mesma — troca-se,
+    /// e desfaz-se o setup. Aceita so o que AGRUPA mais uma sem piorar as outras
+    /// orbitas.
+    fn troca_de_asas_conjugada(&self, cs: &SN, oi: usize) -> Option<Vec<usize>> {
+        let alg = self.wing_swap_alg.get(oi)?.as_ref()?;
+        let count = self.grouped_count(cs, oi);
+        let inv = |m: usize| (m / 3) * 3 + (2 - m % 3);
+        let faces: Vec<usize> = (0..6)
+            .flat_map(|f| (0..3).map(move |pw| (f * self.depths) * 3 + pw))
+            .collect();
+        let n_worb = self.wing_orbits.len();
+        let antes: Vec<usize> = (0..n_worb).map(|o| self.grouped_count(cs, o)).collect();
+        let mut nivel: Vec<Vec<usize>> = vec![Vec::new()];
+        for _ in 0..4 {
+            for setup in &nivel {
+                let mut seq = setup.clone();
+                seq.extend_from_slice(alg);
+                seq.extend(setup.iter().rev().map(|&m| inv(m)));
+                let mut s = *cs;
+                for &m in &seq {
+                    s = self.capply(&s, m);
+                }
+                if self.grouped_count(&s, oi) > count
+                    && (0..n_worb).all(|o| o == oi || self.grouped_count(&s, o) >= antes[o])
+                {
+                    return Some(seq);
+                }
+            }
+            let mut prox = Vec::new();
+            for setup in &nivel {
+                for &m in &faces {
+                    if setup.last().is_some_and(|&l| l / 3 == m / 3) {
+                        continue;
+                    }
+                    let mut c = setup.clone();
+                    c.push(m);
+                    prox.push(c);
+                }
+            }
+            nivel = prox;
         }
         None
     }
@@ -4624,6 +4786,44 @@ mod tests {
                 achou.push(format!("{nome}={} mov", seq.len()));
             }
             println!("N={n}: {}", if achou.is_empty() { "nenhuma".into() } else { achou.join(" ") });
+        }
+    }
+
+    /// Mostra quais correcoes de troca de asa o build certificou, por tamanho e
+    /// orbita. Sem ela, um cubo IMPAR travado refaz tudo do zero.
+    #[test]
+    #[ignore = "diagnóstico: correções de troca de asa"]
+    fn retrato_da_troca_de_asas() {
+        for n in [4usize, 5, 6, 7] {
+            let cn = cuben(n);
+            let achados: Vec<String> = cn
+                .wing_swap_alg
+                .iter()
+                .enumerate()
+                .map(|(oi, a)| match a {
+                    Some(s) => format!("o{oi}={} mov", s.len()),
+                    None => format!("o{oi}=nenhuma"),
+                })
+                .collect();
+            println!("N={n}: {}", achados.join("  "));
+            // a propriedade que o build certificou, reconferida aqui
+            let base = cn.cstate_of(&cn.solved());
+            for (oi, alg) in cn.wing_swap_alg.iter().enumerate() {
+                let Some(seq) = alg else { continue };
+                let mut st = cn.solved();
+                for &m in seq {
+                    cn.apply(&mut st, m);
+                }
+                let cs = cn.cstate_of(&st);
+                assert_eq!(cs.cent, base.cent, "N={n} o{oi}: mexeu nos centros");
+                for o in 0..cn.wing_orbits.len() {
+                    assert_eq!(
+                        cn.grouped_count(&cs, o),
+                        if o == oi { 11 } else { 12 },
+                        "N={n} o{oi}: agrupamento errado na orbita {o}"
+                    );
+                }
+            }
         }
     }
 
