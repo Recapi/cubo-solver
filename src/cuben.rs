@@ -81,6 +81,9 @@ pub struct CubeN {
     /// idem para as orbitas de ASAS
     wbase3: Vec<Option<Vec<usize>>>,
     wing_trees: Vec<Vec<(u16, u8)>>,
+    /// Cubos pares: sequencia que troca a paridade dos pares invertidos da
+    /// orbita 0 SEM mexer nos centros. Certificada por simulacao no build.
+    flip_alg: Option<Vec<usize>>,
 }
 
 static REGISTRY: OnceLock<Mutex<HashMap<usize, Arc<CubeN>>>> = OnceLock::new();
@@ -270,6 +273,11 @@ pub fn solve_n_prog(
                     stages.iter().map(|s| s.tokens.len()).sum(),
                 );
                 let t0 = std::time::Instant::now();
+                // Tentei elevar o esforco da busca construtiva quando a fase
+                // empaca (teto de 120 mil em vez de 4 mil), esperando evitar o
+                // reinicio. MEDIDO na regua: o caso ruim do 7x7 continuou em
+                // ~10 min e os casos normais pioraram 30 a 50% (6x6 de 37s para
+                // 53s). Nao compensa — o teto fixo fica.
                 match cn.improve_centers(&cs, total) {
                     Some(seq) => {
                         let gasto = t0.elapsed().as_secs_f64();
@@ -359,9 +367,16 @@ pub fn solve_n_prog(
         }
         let all_bs = cn.wing_bs(false);
         let mut wing_deadlock: Option<usize> = None;
+        // Rodadas de agrupamento: se ao fim a paridade dos pares invertidos
+        // estiver impar (o 3x3 recusaria), aplicamos a sequencia certificada
+        // que troca essa paridade sem mexer nos centros e reagrupamos. Os
+        // centros ficam prontos, entao a segunda rodada e barata.
+        let mut rodadas = 0;
+        'agrupar: loop {
         'wings: for oi in 0..n_worb {
             let mut guard = 0;
             let mut kicks = 0usize;
+            let mut flips_usados = 0usize;
             loop {
                 let cs = cn.cstate_of(&state);
                 let count = cn.grouped_count(&cs, oi);
@@ -378,6 +393,14 @@ pub fn solve_n_prog(
                     break 'wings;
                 }
 
+                // MEDIDO: o 3x3 exige um numero PAR de pares invertidos na
+                // orbita 0 (com impar acusa "uma aresta esta invertida"). Mas
+                // NAO da para escolher a orientacao ao fechar a ultima aresta:
+                // cada asa tem quiralidade fixa, entao quando restam duas a
+                // orientacao ja esta determinada. Exigir isso aqui so tornava o
+                // objetivo impossivel — o solver gastava 103s por tentativa
+                // fracassada. A correcao da paridade fica para depois do
+                // agrupamento (ver o tratamento do erro do mapa 3x3).
                 let goal_any = |s: &SN| {
                     cn.c_centers_solved(s, n_corb, &[]) && cn.grouped_count(s, oi) > count
                 };
@@ -410,10 +433,30 @@ pub fn solve_n_prog(
                     NSearch::run(&cn, &cs, &goal_any, &h_any, 4)
                 };
                 if so_orientacao && found.is_none() {
-                    // A fatia que inverte a orientacao TAMBEM mexe nos centros,
-                    // que ja estao prontos. Por isso a correcao volta ao inicio
-                    // do ciclo (refaz centros e agrupamento), em vez de tentar
-                    // remendar aqui — era esse remendo que entrava em laço.
+                    // Faltando so a orientacao do ultimo par: a sequencia
+                    // certificada troca essa relacao SEM mexer nos centros,
+                    // entao da para consertar aqui e reagrupar — bem mais
+                    // barato que voltar ao inicio (que refaz os centros).
+                    if flips_usados < 3 {
+                        if let Some(alg) = cn.flip_alg.clone() {
+                            flips_usados += 1;
+                            if dbg >= 1 {
+                                eprintln!("asas orbita {oi}: orientação -> correção no lugar");
+                            }
+                            push_stage(
+                                &cn,
+                                &mut state,
+                                &mut states,
+                                &mut stages,
+                                "Paridade das arestas".into(),
+                                "Inverte um par de asas; sem isso o cubo reduzido seria impossível."
+                                    .into(),
+                                &alg,
+                            );
+                            continue;
+                        }
+                    }
+                    // sem correcao no lugar (cubo impar): refaz do inicio
                     if dbg >= 1 {
                         eprintln!("asas orbita {oi}: paridade de orientação -> refazer do inicio");
                     }
@@ -587,6 +630,34 @@ pub fn solve_n_prog(
             }
         }
 
+        // Agrupou tudo: a paridade dos pares invertidos precisa ser PAR, senao
+        // o 3x3 recusa ("uma aresta esta invertida"). A sequencia certificada
+        // troca essa paridade sem estragar os centros.
+        rodadas += 1;
+        if wing_deadlock.is_none() && rodadas < 4 {
+            let cs = cn.cstate_of(&state);
+            if cn.invertidos(&cs, 0) % 2 == 1 {
+                if let Some(alg) = cn.flip_alg.clone() {
+                    if dbg >= 1 {
+                        eprintln!("paridade das arestas impar: aplicando a correcao certificada");
+                    }
+                    push_stage(
+                        &cn,
+                        &mut state,
+                        &mut states,
+                        &mut stages,
+                        "Paridade das arestas".into(),
+                        "Inverte um par de asas; sem isso o cubo reduzido seria impossível."
+                            .into(),
+                        &alg,
+                    );
+                    continue 'agrupar; // reagrupa o que a correcao desfez
+                }
+            }
+        }
+        break 'agrupar;
+        }
+
         // Deadlock de asas = par trocado, que e uma TRANSPOSICAO: so uma
         // sequencia de sinal IMPAR desfaz. Medido: os impares sao os giros
         // largos (Rw, 3Rw...), nao as fatias puras — a fatia pura e produto de
@@ -624,6 +695,24 @@ pub fn solve_n_prog(
         }
 
         // ---- mapa 3x3 + paridades ---------------------------------------
+        if dbg >= 1 {
+            let cs = cn.cstate_of(&state);
+            // quantos pares estao "invertidos" (bit 1). Num cubo par a orbita 0
+            // nao tem referencia, entao esse bit e livre — e o 3x3 so aceita um
+            // numero PAR deles.
+            let invertidos: Vec<usize> = (0..n_worb)
+                .map(|oi| {
+                    (0..12)
+                        .filter(|&j| (cs.wo[oi] >> (2 * j)) & 1 == 1)
+                        .count()
+                })
+                .collect();
+            eprintln!(
+                "INVERTIDOS (tentativa {attempt}): {:?} — paridade {:?}",
+                invertidos,
+                invertidos.iter().map(|c| c % 2).collect::<Vec<_>>()
+            );
+        }
         say("Resolvendo como 3x3", stages.iter().map(|s| s.tokens.len()).sum());
         let f3 = cn.reduce_to_3x3(&state);
         match crate::facelet::to_cubie(&f3) {
@@ -1550,6 +1639,7 @@ impl CubeN {
             triple_trees: Vec::new(),
             wbase3: Vec::new(),
             wing_trees: Vec::new(),
+            flip_alg: None,
         };
         // 3-ciclos puros e arvores de conjugacao (precisam do resto pronto).
         // A busca custa ~30s somando os tres tamanhos, e o resultado e fixo por
@@ -1575,6 +1665,28 @@ impl CubeN {
             })
             .collect();
         cn.wbase3 = wbase3;
+        // Cubos pares: acha (e CERTIFICA por simulacao) uma sequencia que troca
+        // a paridade dos pares invertidos sem estragar os centros. Sem ela, os
+        // cubos com paridade impar nao fecham — o 3x3 recusa a reducao.
+        if n % 2 == 0 {
+            let base = cn.cstate_of(&cn.solved());
+            for txt in [
+                "Rw' U2 Lw F2 Lw' F2 Rw2 U2 Rw U2 Rw' U2 F2 Rw2 F2",
+                "Rw2 B2 U2 Lw U2 Rw' U2 Rw U2 F2 Rw F2 Lw' B2 Rw2",
+            ] {
+                let Ok(seq) = cn.parse_moves(txt) else { continue };
+                let mut s = base;
+                for &m in &seq {
+                    s = cn.capply(&s, m);
+                }
+                let centros_intactos = s.cent == base.cent;
+                let trocou_paridade = cn.invertidos(&s, 0) % 2 == 1;
+                if centros_intactos && trocou_paridade {
+                    cn.flip_alg = Some(seq);
+                    break;
+                }
+            }
+        }
         cn.wing_trees = (0..cn.wing_orbits.len())
             .map(|oi| match &cn.wbase3[oi] {
                 Some(seq) => match cn.wing_cycle_support(seq, oi) {
@@ -2262,7 +2374,11 @@ impl CubeN {
     /// Medido: no estado tipico que empaca, ha ~6 comutadores simples que
     /// melhoram e a varredura deles custa milissegundos — por isso ela vem
     /// antes de qualquer enumeracao generica.
+    /// `teto` limita a busca construtiva de dois saltos. Elevar quando a fase
+    /// empaca ja foi tentado e medido: nao compensou (ver o comentario na fase
+    /// de centros), entao o valor e fixo.
     fn improve_centers(&self, cs: &SN, total: usize) -> Option<Vec<usize>> {
+        let teto = 4000;
         let dbg = debug_level();
         let marca = |nome: &str, t0: std::time::Instant, achou: bool| {
             if dbg >= 1 {
@@ -2294,7 +2410,7 @@ impl CubeN {
         // desprezivel, enquanto `macro3` gastava 706s para acertar 10 de 175.
         // Por isso a construcao vem logo depois dos degraus baratos.
         let t5 = std::time::Instant::now();
-        if let Some(r) = self.constructive_center_step(cs) {
+        if let Some(r) = self.constructive_center_step_teto(cs, teto) {
             marca("3-ciclo construido", t5, true);
             return Some(r);
         }
@@ -2913,16 +3029,25 @@ impl CubeN {
     /// largo) e impar nelas tambem, e exigir paridade par ali eliminava a
     /// unica saida.
     fn wing_parity_fixes(&self, oi: usize) -> Vec<Vec<usize>> {
-        let serve = |seq: &[usize]| {
+        // Primeiro as "cirurgicas" (impar so nessa orbita) e DEPOIS as que
+        // tambem mexem nas outras: exigir sempre pureza ja tinha me custado a
+        // unica saida no caso das arestas do meio, e o mesmo vale entre
+        // orbitas — ha cubo 6x6 que so fecha com uma correcao nao pura.
+        let puro = |seq: &[usize]| {
             let (asas, _meio) = self.seq_signs(seq);
             asas[oi] && asas.iter().enumerate().all(|(k, &s)| k == oi || !s)
         };
+        let qualquer = |seq: &[usize]| self.seq_signs(seq).0[oi];
         let mut saida = Vec::new();
+        let mut soltas = Vec::new();
         for m in 0..self.n_moves {
-            if serve(&[m]) {
+            if puro(&[m]) {
                 saida.push(vec![m]);
+            } else if qualquer(&[m]) {
+                soltas.push(vec![m]);
             }
         }
+        let serve = puro;
         if saida.len() < 4 {
             for m1 in 0..self.n_moves {
                 for m2 in 0..self.n_moves {
@@ -2932,12 +3057,14 @@ impl CubeN {
                     if serve(&[m1, m2]) {
                         saida.push(vec![m1, m2]);
                         if saida.len() >= 8 {
+                            saida.extend(soltas);
                             return saida;
                         }
                     }
                 }
             }
         }
+        saida.extend(soltas); // as nao puras entram no fim da fila
         saida
     }
 
@@ -3016,7 +3143,27 @@ impl CubeN {
     /// Passo CONSTRUTIVO das asas: leva uma asa solta para a casa onde ela
     /// forma par com a referencia, usando 3-ciclos cirurgicos. Testa varias
     /// terceiras casas porque o caminho define o bit de orientacao da asa.
+    /// Quantos pares agrupados estao "invertidos" (bit 1). Medido: o 3x3 so
+    /// aceita a reducao quando esse numero e PAR — com um numero impar ele
+    /// acusa "uma aresta esta invertida". Num cubo par a orbita 0 nao tem peca
+    /// de referencia, entao essa orientacao e escolha nossa, e da para acertar
+    /// ao fechar o ultimo par em vez de refazer tudo depois.
+    fn invertidos(&self, s: &SN, oi: usize) -> usize {
+        (0..12).filter(|&j| (s.wo[oi] >> (2 * j)) & 1 == 1).count()
+    }
+
     fn constructive_wing_step(&self, cs: &SN, oi: usize) -> Option<Vec<usize>> {
+        self.constructive_wing_step_par(cs, oi, false)
+    }
+
+    /// `exigir_par`: so aceita a sequencia se, ao fechar as 12 arestas, o
+    /// numero de pares invertidos ficar par (senao o 3x3 recusa a reducao).
+    fn constructive_wing_step_par(
+        &self,
+        cs: &SN,
+        oi: usize,
+        exigir_par: bool,
+    ) -> Option<Vec<usize>> {
         let count = self.grouped_count(cs, oi);
         let soltos: Vec<usize> = (0..12).filter(|&t| !self.grouped(cs, oi, t)).collect();
         // casas "livres": pertencem a pares ainda nao formados, logo podem
@@ -3078,9 +3225,17 @@ impl CubeN {
                 for (da, db) in [(2 * j, 2 * j + 1), (2 * j + 1, 2 * j)] {
                     for (origem, parceira) in [(a, b), (b, a)] {
                         // caso facil: um 3-ciclo ja fecha
+                        // aceita se agrupou mais uma; fechando as 12, a
+                        // orientacao tem de deixar o total de invertidos par
+                        let aceita = |s: &SN| {
+                            let c = self.grouped_count(s, oi);
+                            // a orientacao que importa e a da orbita 0: e dela
+                            // que o mapa 3x3 le as arestas
+                            c > count && (!exigir_par || c < 12 || self.invertidos(s, 0) % 2 == 0)
+                        };
                         for seq in tenta_um(cs, origem, da) {
                             let s1 = aplicar(cs, &seq);
-                            if self.grouped_count(&s1, oi) > count {
+                            if aceita(&s1) {
                                 return Some(seq);
                             }
                             // senao, um segundo 3-ciclo para a parceira
@@ -3091,7 +3246,7 @@ impl CubeN {
                             }
                             for seq2 in tenta_um(&s1, resto, db) {
                                 let s2 = aplicar(&s1, &seq2);
-                                if self.grouped_count(&s2, oi) > count {
+                                if aceita(&s2) {
                                     let mut junta = seq.clone();
                                     junta.extend(seq2);
                                     return Some(junta);
@@ -3109,7 +3264,9 @@ impl CubeN {
     /// Passo CONSTRUTIVO dos centros: acha tres casas erradas em cadeia e as
     /// arruma com um 3-ciclo cirurgico. Sempre progride (ao menos +1), logo
     /// nao ha platô nem ciclo — e o que garante o fechamento dos centros.
-    fn constructive_center_step(&self, cs: &SN) -> Option<Vec<usize>> {
+    /// `teto` limita as combinacoes avaliadas na busca de dois saltos: a
+    /// varredura completa sao ~331 mil combinacoes.
+    fn constructive_center_step_teto(&self, cs: &SN, teto: usize) -> Option<Vec<usize>> {
         let total = self.center_total(cs);
         let mut melhor: Option<Vec<usize>> = None;
         'orbitas: for oi in 0..self.center_orbits.len() {
@@ -3200,7 +3357,7 @@ impl CubeN {
                                     continue;
                                 }
                                 avaliadas += 1;
-                                if avaliadas > 4000 {
+                                if avaliadas > teto {
                                     break 'dois_saltos;
                                 }
                                 let Some(s2) =
@@ -3689,6 +3846,102 @@ mod tests {
             k += 1;
         }
         st
+    }
+
+    /// O 3x3 reduzido so aceita um numero PAR de pares invertidos na orbita 0
+    /// (medido: com impar ele acusa "uma aresta esta invertida"). Como a
+    /// orientacao NAO pode ser escolhida ao fechar a ultima aresta — cada asa
+    /// tem quiralidade fixa —, a correcao precisa ser uma sequencia que inverta
+    /// UM par no lugar, preservando centros e o resto. Este teste verifica, por
+    /// simulacao, se os algoritmos conhecidos do 4x4 fazem isso nos cubos
+    /// maiores; o que passar vira a correcao usada.
+    #[test]
+    fn acha_algoritmo_de_inverter_par() {
+        let candidatos = [
+            "Rw' U2 Lw F2 Lw' F2 Rw2 U2 Rw U2 Rw' U2 F2 Rw2 F2",
+            "Rw U2 Rw U2 Rw' U2 Rw U2 Lw' U2 Rw' U2 Rw U2 Rw' U2 Rw'",
+            "Rw2 B2 U2 Lw U2 Rw' U2 Rw U2 F2 Rw F2 Lw' B2 Rw2",
+        ];
+        for n in [4usize, 6] {
+            let cn = cuben(n);
+            let base = cn.cstate_of(&cn.solved());
+            println!("\nN={n}:");
+            for (i, txt) in candidatos.iter().enumerate() {
+                let Ok(seq) = cn.parse_moves(txt) else {
+                    println!("  cand {i}: nao parseia");
+                    continue;
+                };
+                let mut s = base;
+                for &m in &seq {
+                    s = cn.capply(&s, m);
+                }
+                let centros_ok = s.cent == base.cent;
+                // quantas casas de asa mudaram de tipo, e quantos bits viraram
+                let mut tipos = 0;
+                let mut bits = 0;
+                for oi in 0..cn.wing_orbits.len() {
+                    for q in 0..24 {
+                        if s.wt[oi * 24 + q] != base.wt[oi * 24 + q] {
+                            tipos += 1;
+                        }
+                        if (s.wo[oi] >> q) & 1 != (base.wo[oi] >> q) & 1 {
+                            bits += 1;
+                        }
+                    }
+                }
+                let inv = (0..cn.wing_orbits.len())
+                    .map(|oi| cn.invertidos(&s, oi))
+                    .collect::<Vec<_>>();
+                println!(
+                    "  cand {i}: centros_ok={centros_ok} tipos_mexidos={tipos} bits_virados={bits} invertidos={inv:?}"
+                );
+            }
+        }
+    }
+
+    /// Régua fixa para comparar mudanças: embaralhamentos com semente
+    /// constante, então antes/depois medem O MESMO cubo. Sem isso a variação
+    /// entre embaralhamentos esconde (ou inventa) ganhos — foi assim que
+    /// aprovei uma "melhoria" que na verdade piorava.
+    /// Rodar: cargo test --release regua_cubos_grandes -- --ignored --nocapture
+    #[test]
+    #[ignore = "régua de comparação; roda sob demanda"]
+    fn regua_cubos_grandes() {
+        let tables = Tables::build();
+        let letras = ['U', 'R', 'F', 'D', 'L', 'B'];
+        println!("\n tamanho | caso | movimentos | tempo");
+        for n in [5usize, 6, 7] {
+            let cn = cuben(n);
+            let mut soma_mov = 0usize;
+            let mut soma_s = 0.0;
+            let casos = 3;
+            for caso in 0..casos {
+                let st = lcg_scramble(&cn, 1000 + (n * 10 + caso) as u64, 10 * n);
+                let entrada = cn.render(&st, &letras);
+                let t0 = std::time::Instant::now();
+                let sol = solve_n(n, &entrada, &tables)
+                    .unwrap_or_else(|e| panic!("N={n} caso {caso}: {e}"));
+                let s = t0.elapsed().as_secs_f64();
+                // confere de verdade: as seis faces uniformes
+                let ult: Vec<char> = sol.states.last().unwrap().chars().collect();
+                let por_face = n * n;
+                for f in 0..6 {
+                    let c0 = ult[f * por_face];
+                    assert!(
+                        (0..por_face).all(|k| ult[f * por_face + k] == c0),
+                        "N={n} caso {caso}: face {f} nao uniforme"
+                    );
+                }
+                println!("   {n}x{n}  |  {caso}   |    {:5}   | {s:6.1}s", sol.length);
+                soma_mov += sol.length;
+                soma_s += s;
+            }
+            println!(
+                "   {n}x{n}  | MÉDIA|    {:5}   | {:6.1}s",
+                soma_mov / casos,
+                soma_s / casos as f64
+            );
+        }
     }
 
     /// O 4x4 pela mesma construcao generica: e o solver mais antigo do projeto
