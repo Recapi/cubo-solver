@@ -712,6 +712,10 @@ async fn apin_solve_start(
     st.njobs.lock().unwrap().insert(id, job.clone());
 
     let tables = st.tables.clone();
+    // A planificacao vai para o log ANTES de resolver: sem isso um caso lento
+    // visto no navegador nao e reproduzivel, e a regua (sementes fixas) nao
+    // pega os patologicos que aparecem no uso real.
+    println!("[job {id}] {n}x{n} entrada: {f}");
     tokio::task::spawn_blocking(move || {
         let start = Instant::now();
         let j = job.clone();
@@ -721,6 +725,11 @@ async fn apin_solve_start(
         };
         let out = cuben::solve_n_prog(n, &f, &tables, Some(&prog))
             .map(|s| solve_n_json(&s, start.elapsed().as_millis()));
+        let gasto = start.elapsed().as_secs_f64();
+        match &out {
+            Ok(_) => println!("[job {id}] {n}x{n} resolvido em {gasto:.1}s"),
+            Err(e) => println!("[job {id}] {n}x{n} FALHOU em {gasto:.1}s: {e}"),
+        }
         *job.result.lock().unwrap() = Some(out);
         job.done.store(true, std::sync::atomic::Ordering::Relaxed);
     });

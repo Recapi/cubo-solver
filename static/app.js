@@ -1214,6 +1214,24 @@
     fillFixedCenters();
     stateChanged();
   });
+  // Copiar a planificação: sem isso, um caso ruim visto no navegador não é
+  // reproduzível — foi assim que um 7x7 travado se perdeu.
+  $("btn-copiar").addEventListener("click", function () {
+    var txt = state.join("");
+    var b = $("btn-copiar");
+    var volta = function (msg) {
+      b.textContent = msg;
+      setTimeout(function () { b.textContent = "Copiar estado"; }, 1500);
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(txt).then(
+        function () { volta("Copiado!"); },
+        function () { prompt("Copie a planificação:", txt); }
+      );
+    } else {
+      prompt("Copie a planificação:", txt);
+    }
+  });
   $("size").addEventListener("change", function (e) { setSize(+e.target.value); });
   $("btn-apply").addEventListener("click", doApply);
   $("btn-cfop").addEventListener("click", doCfop);

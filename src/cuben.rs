@@ -456,11 +456,43 @@ pub fn solve_n_prog(
             // acertos contra ~400 falhas, e o 7x7 em 10s onde a base fazia
             // 3.6s). Na primeira falha, para de tentar nesta orbita.
             let mut lote_vivo = true;
+            // Orcamento dos degraus CAROS (macro2/macro3/pre-movimento/fatia
+            // funda). MEDIDO no caso travado que o uso real achou: eles gastam
+            // ~60s por iteracao (21s + 27s + 10s + 1s) e NUNCA acham — em todo
+            // o estresse aleatorio quem fecha aresta e o 3-ciclo, a
+            // fatia-encaixa e o lote. Sem teto, o guarda de 300 iteracoes vira
+            // horas. Com teto, o solver chuta (3 movimentos, ~0,1s por aresta
+            // para reagrupar) em vez de insistir numa busca que nao termina.
+            let mut caros = 2usize;
+            // Sem progresso por muitas iteracoes = caso que esta escada nao
+            // resolve. MEDIDO num 7x7 do uso real: tres arestas na casa certa
+            // com as asas TROCADAS (transposicao), que nenhum 3-ciclo desfaz
+            // (3-ciclo e par) e que a correcao certificada nao cobre — ela
+            // garante "uma aresta desagrupada", nao "as duas asas trocadas".
+            // Em vez de moer 300 iteracoes, cai cedo na saida que existe e
+            // funciona: recomecar com prefixo de paridade.
+            let mut parado = 0usize;
+            let mut ultimo_count = usize::MAX;
             loop {
                 let cs = cn.cstate_of(&state);
                 let count = cn.grouped_count(&cs, oi);
                 if count == 12 {
                     break;
+                }
+                if count == ultimo_count {
+                    parado += 1;
+                    if parado > 4 {
+                        if dbg >= 1 {
+                            eprintln!(
+                                "asas orbita {oi}: sem progresso em {count}/12 -> refazer do inicio"
+                            );
+                        }
+                        wing_deadlock = Some(oi);
+                        break 'wings;
+                    }
+                } else {
+                    parado = 0;
+                    ultimo_count = count;
                 }
                 say(
                     &format!("Agrupando arestas ({count}/12)"),
@@ -647,22 +679,130 @@ pub fn solve_n_prog(
                         }
                     }
                 }
+                // ARESTA VIRADA, em qualquer quantidade. Uma aresta pode estar
+                // na casa certa com as duas asas TROCADAS em relacao ao meio —
+                // uma transposicao, que nenhum 3-ciclo desfaz (3-ciclo e par).
+                // Isto so era tratado com `count == 11`, supondo que so a
+                // ultima aresta pudesse estar assim. MEDIDO num 7x7 do uso
+                // real: tres arestas viradas de uma vez, com count=9, e o
+                // solver ficava horas — os degraus caros gastavam 60s por
+                // iteracao sem nunca achar, porque nao existe solucao par.
                 if found.is_none() {
+                    if let Some(seq) = cn.troca_de_asas_conjugada(&cs, oi) {
+                        if dbg >= 1 {
+                            eprintln!("asas orbita {oi}: aresta virada -> troca no lugar");
+                        }
+                        push_stage(
+                            &cn,
+                            &mut state,
+                            &mut states,
+                            &mut stages,
+                            "Paridade das arestas".into(),
+                            "Troca as duas asas de uma aresta; sem isso ela não fecha.".into(),
+                            &seq,
+                        );
+                        continue;
+                    }
+                    if let Some(alg) = cn.flip_alg.clone() {
+                        // cubos pares: a mesma ideia, com a sequencia deles
+                        let mut s = cs;
+                        for &m in &alg {
+                            s = cn.capply(&s, m);
+                        }
+                        if cn.grouped_count(&s, oi) > count {
+                            if dbg >= 1 {
+                                eprintln!("asas orbita {oi}: aresta virada -> flip no lugar");
+                            }
+                            push_stage(
+                                &cn,
+                                &mut state,
+                                &mut states,
+                                &mut stages,
+                                "Paridade das arestas".into(),
+                                "Inverte um par de asas; sem isso o cubo reduzido seria impossível."
+                                    .into(),
+                                &alg,
+                            );
+                            continue;
+                        }
+                    }
+                }
+                if dbg >= 1 && found.is_none() && t0.elapsed().as_secs_f64() > 1.0 {
+                    eprintln!("WLENTO ate o 3-ciclo: {:.1}s", t0.elapsed().as_secs_f64());
+                }
+                let tenta_caros = found.is_none() && caros > 0;
+                if found.is_none() && !tenta_caros && dbg >= 1 {
+                    // retrato do caso travado: quem esta solto e onde estao as
+                    // asas desses tipos
+                    let soltos: Vec<usize> =
+                        (0..12).filter(|&tt| !cn.grouped(&cs, oi, tt)).collect();
+                    let posic: Vec<String> = soltos
+                        .iter()
+                        .map(|&tt| {
+                            let (a, b) = cn.wing_positions(&cs, oi, tt);
+                            format!("t{tt}@{a},{b}")
+                        })
+                        .collect();
+                    // onde esta o MEIO de cada tipo solto: define se o par
+                    // esta em casa (e virado) ou na casa errada
+                    let casas: Vec<String> = soltos
+                        .iter()
+                        .map(|&tt| {
+                            let lar = (0..12).find(|&j| cs.mt[j] as usize == tt);
+                            format!("t{tt}:lar={lar:?}")
+                        })
+                        .collect();
+                    let troca = cn.troca_de_asas_conjugada(&cs, oi).is_some();
+                    let inv = cn.invertidos(&cs, oi);
+                    // cada tipo solto: as duas asas estao juntas na mesma casa?
+                    let juntas: Vec<String> = soltos
+                        .iter()
+                        .map(|&tt| {
+                            let (a, b) = cn.wing_positions(&cs, oi, tt);
+                            let mesma = a / 2 == b / 2;
+                            let lar = (0..12).find(|&j| cs.mt[j] as usize == tt);
+                            format!("t{tt}:{}", if mesma && lar == Some(a / 2) { "em-casa-virada" } else if mesma { "junta-fora" } else { "separada" })
+                        })
+                        .collect();
+                    eprintln!("   invertidos={inv} {}", juntas.join(" "));
+                    eprintln!(
+                        "TRAVADO orbita {oi} count={count} soltos={soltos:?} {} | {} | troca_acha={troca}",
+                        posic.join(" "),
+                        casas.join(" ")
+                    );
+                }
+                if tenta_caros {
                     step = "macro2";
                     found = cn
                         .macro_search(&cs, &goal_any, &all_bs, 2, None)
                         .map(|r| cn.trim_tail(&cs, r, &goal_any));
+                    if dbg >= 1 {
+                        eprintln!(
+                            "WLENTO macro2 {:.1}s achou={}",
+                            t0.elapsed().as_secs_f64(),
+                            found.is_some()
+                        );
+                    }
                 }
                 // Degraus caros, mas eram eles que fechavam a maioria das
                 // arestas: o passo construido e um atalho, nao um substituto.
-                if found.is_none() {
+                if tenta_caros && found.is_none() {
                     step = "macro3";
+                    let tm = std::time::Instant::now();
                     found = cn
                         .macro_search(&cs, &goal_any, &all_bs, 3, None)
                         .map(|r| cn.trim_tail(&cs, r, &goal_any));
+                    if dbg >= 1 {
+                        eprintln!(
+                            "WLENTO macro3 {:.1}s achou={}",
+                            tm.elapsed().as_secs_f64(),
+                            found.is_some()
+                        );
+                    }
                 }
-                if found.is_none() {
+                if tenta_caros && found.is_none() {
                     step = "pre-movimento";
+                    let tp = std::time::Instant::now();
                     let inv = |m: usize| (m / 3) * 3 + (2 - m % 3);
                     for &t in &cn.premove_order() {
                         let st = cn.capply(&cs, t);
@@ -678,15 +818,35 @@ pub fn solve_n_prog(
                             break;
                         }
                     }
+                    if dbg >= 1 {
+                        eprintln!(
+                            "WLENTO pre-movimento {:.1}s achou={}",
+                            tp.elapsed().as_secs_f64(),
+                            found.is_some()
+                        );
+                    }
                 }
-                if found.is_none() {
+                if tenta_caros && found.is_none() {
                     step = "fatia-encaixa-funda";
+                    let tf = std::time::Instant::now();
                     for prof in 5..=5usize {
                         found = cn.slice_face_macro(&cs, &goal_any, prof);
                         if found.is_some() {
                             break;
                         }
                     }
+                    if dbg >= 1 {
+                        eprintln!(
+                            "WLENTO fatia-funda {:.1}s achou={}",
+                            tf.elapsed().as_secs_f64(),
+                            found.is_some()
+                        );
+                    }
+                }
+                // Gastou a rodada cara e nao achou: desconta do orcamento. Duas
+                // rodadas ja custam ~2 minutos; alem disso o chute e melhor.
+                if tenta_caros && found.is_none() {
+                    caros -= 1;
                 }
                 // fim de jogo (<=3 soltas): a tabela exata de dois pares poda bem
                 if found.is_none() {
@@ -1255,6 +1415,20 @@ impl CubeN {
             };
             if !self.casa_tudo(24, 2, &cabe) {
                 return false;
+            }
+        }
+        // Composicao certa nao basta: o guiado deixava passar cubos com uma asa
+        // virada sozinha, que nenhum giro produz. Isso e invariante GLOBAL, so
+        // decidivel com a pintura fechada — entao a checagem entra no ultimo
+        // adesivo, que e onde ela ainda serve para travar o erro.
+        if f.iter().all(|x| x.is_some()) {
+            let estado: Vec<u8> = f.iter().map(|x| x.unwrap()).collect();
+            let cs = self.cstate_of(&estado);
+            for oi in 0..self.wing_orbits.len() {
+                let viradas = (0..24).filter(|&q| (cs.wo[oi] >> q) & 1 == 1).count();
+                if viradas % 2 == 1 {
+                    return false;
+                }
             }
         }
         true
@@ -2176,6 +2350,26 @@ impl CubeN {
                 let cnt = orbit.iter().filter(|&&s| state[s] == face).count();
                 if cnt != 4 {
                     return Err("os centros nao formam um conjunto valido".into());
+                }
+            }
+        }
+        // Numero PAR de asas viradas, por orbita. As cores podem formar o
+        // conjunto certo e ainda assim a montagem ser impossivel: virar uma asa
+        // sozinha nao se consegue girando o cubo. MEDIDO em embaralhamentos
+        // legitimos de 5x5, 6x6 e 7x7 — sempre par (8 a 16); num cubo montado a
+        // mao no preencher guiado deu 13, e o solver ficava HORAS procurando a
+        // saida de um labirinto sem saida. Melhor recusar na entrada.
+        {
+            let cs = self.cstate_of(&state);
+            for oi in 0..self.wing_orbits.len() {
+                let viradas = (0..24).filter(|&q| (cs.wo[oi] >> q) & 1 == 1).count();
+                if viradas % 2 == 1 {
+                    return Err(
+                        "este cubo nao existe: ha uma aresta virada sozinha. \
+                         Confira as cores — virar uma peca de aresta e impossivel \
+                         girando o cubo."
+                            .into(),
+                    );
                 }
             }
         }
@@ -3231,13 +3425,18 @@ impl CubeN {
         let alg = self.wing_swap_alg.get(oi)?.as_ref()?;
         let count = self.grouped_count(cs, oi);
         let inv = |m: usize| (m / 3) * 3 + (2 - m % 3);
-        let faces: Vec<usize> = (0..6)
-            .flat_map(|f| (0..3).map(move |pw| (f * self.depths) * 3 + pw))
-            .collect();
+        // O setup pode ser QUALQUER movimento, nao so giro de face: a
+        // conjugacao V·alg·V' devolve os centros de qualquer jeito, porque V'
+        // desfaz o que V fez e o alg nao os toca. Limitar a giros de face era
+        // uma cautela desnecessaria que deixava casos sem saida — medido num
+        // 7x7 do uso real, com tres arestas viradas e nenhuma conjugacao
+        // encontrada.
+        let faces: Vec<usize> = (0..self.n_moves).collect();
         let n_worb = self.wing_orbits.len();
         let antes: Vec<usize> = (0..n_worb).map(|o| self.grouped_count(cs, o)).collect();
         let mut nivel: Vec<Vec<usize>> = vec![Vec::new()];
-        for _ in 0..4 {
+        // profundidade 2 com o conjunto completo (~54 + 54*53 = 2916 setups)
+        for _ in 0..3 {
             for setup in &nivel {
                 let mut seq = setup.clone();
                 seq.extend_from_slice(alg);
@@ -3246,8 +3445,12 @@ impl CubeN {
                 for &m in &seq {
                     s = self.capply(&s, m);
                 }
+                // Protege so as orbitas JA prontas (o < oi). Exigir que a de
+                // dentro tambem nao regrida travava a correcao: ela ainda nem
+                // foi agrupada, e estraga-la e inofensivo — foi por isso que o
+                // 7x7 do uso real ficou horas sem achar saida.
                 if self.grouped_count(&s, oi) > count
-                    && (0..n_worb).all(|o| o == oi || self.grouped_count(&s, o) >= antes[o])
+                    && (0..oi).all(|o| self.grouped_count(&s, o) >= antes[o])
                 {
                     return Some(seq);
                 }
@@ -4849,6 +5052,134 @@ mod tests {
                 achou.push(format!("{nome}={} mov", seq.len()));
             }
             println!("N={n}: {}", if achou.is_empty() { "nenhuma".into() } else { achou.join(" ") });
+        }
+    }
+
+    /// Estresse com embaralhamento ALEATORIO, imprimindo a planificacao ANTES
+    /// de resolver: se um caso travar, ele fica registrado e da para replicar
+    /// com CUBEN_STATE. A regua (3 sementes fixas) e otimista — medido, os
+    /// casos aleatorios do 7x7 levam 15-19s onde ela indica 3.7s, e o uso real
+    /// achou um que passou de 250s.
+    #[test]
+    #[ignore = "estresse: cubos aleatórios, imprime a entrada de cada um"]
+    fn estresse_aleatorio() {
+        let tables = Tables::build();
+        let n: usize = std::env::var("CUBEN_N").ok().and_then(|v| v.parse().ok()).unwrap_or(7);
+        let casos: usize =
+            std::env::var("CUBEN_CASOS").ok().and_then(|v| v.parse().ok()).unwrap_or(10);
+        let cn = cuben(n);
+        let mut pior = 0.0f64;
+        for i in 0..casos {
+            // semente do relogio: casos diferentes a cada rodada
+            let semente = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos() as u64
+                ^ (i as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+            let st = lcg_scramble(&cn, semente, n * 12);
+            let entrada = cn.render(&st, &['U', 'R', 'F', 'D', 'L', 'B']);
+            println!("--- caso {i} ---\nCUBEN_STATE={entrada}");
+            let t0 = std::time::Instant::now();
+            let sol = solve_n(n, &entrada, &tables).expect("resolver");
+            let gasto = t0.elapsed().as_secs_f64();
+            pior = pior.max(gasto);
+            println!("caso {i}: {} movimentos em {gasto:.1}s", sol.length);
+        }
+        println!("\npior caso: {pior:.1}s");
+    }
+
+    /// Cada asa tem QUIRALIDADE fixa: das duas casas de uma aresta, ela so cabe
+    /// numa. Logo, num cubo legal, as duas asas de um mesmo tipo ocupam casas de
+    /// paridade diferente (uma par, uma impar). Um cubo montado a mao viola isso
+    /// com facilidade — as cores formam o conjunto certo, mas a montagem e
+    /// impossivel — e o validador atual nao percebe.
+    #[test]
+    #[ignore = "diagnóstico: as asas têm quiralidade possível?"]
+    fn quiralidade_das_asas() {
+        let Ok(s) = std::env::var("CUBEN_STATE") else {
+            println!("defina CUBEN_STATE");
+            return;
+        };
+        let limpo: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+        let n = match limpo.len() {
+            150 => 5,
+            216 => 6,
+            294 => 7,
+            o => panic!("{o} adesivos"),
+        };
+        let cn = cuben(n);
+        let (estado, _) = cn.parse(&limpo).expect("planificacao aceita pelo validador");
+        let cs = cn.cstate_of(&estado);
+        // Nao ha restricao de quiralidade: medido, a casa 0 alcanca as 24.
+        // O invariante que resta e a ORIENTACAO: uma asa virada no lugar e
+        // impossivel de montar. Conta quantas estao viradas em cada orbita.
+        for oi in 0..cn.wing_orbits.len() {
+            let viradas = (0..24).filter(|&q| (cs.wo[oi] >> q) & 1 == 1).count();
+            println!("  orbita {oi}: {viradas} asas viradas (invertidos={})", cn.invertidos(&cs, oi));
+        }
+    }
+
+    /// Um cubo IMPAR tem um 3x3 exato dentro dele: cantos, meios de aresta e
+    /// centros do meio. Se esse nucleo for ilegal, o cubo inteiro e impossivel
+    /// — e nenhum solver o resolve. Serve para separar "bug do solver" de
+    /// "planificacao invalida", que e o que um cubo montado a mao costuma ser.
+    #[test]
+    #[ignore = "diagnóstico: o núcleo 3x3 de um cubo ímpar é legal?"]
+    fn nucleo_3x3_e_legal() {
+        let Ok(s) = std::env::var("CUBEN_STATE") else {
+            println!("defina CUBEN_STATE");
+            return;
+        };
+        let limpo: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+        let n = match limpo.len() {
+            150 => 5,
+            294 => 7,
+            outro => {
+                println!("{outro} adesivos: so 5x5 e 7x7 tem nucleo 3x3");
+                return;
+            }
+        };
+        let ch: Vec<char> = limpo.chars().collect();
+        let m = n / 2; // linha/coluna do meio
+        // extrai as 9 casas de cada face: cantos, meios e centro
+        let mut nucleo = String::new();
+        for face in 0..6 {
+            for &(r, c) in &[
+                (0, 0), (0, m), (0, n - 1),
+                (m, 0), (m, m), (m, n - 1),
+                (n - 1, 0), (n - 1, m), (n - 1, n - 1),
+            ] {
+                nucleo.push(ch[face * n * n + r * n + c]);
+            }
+        }
+        println!("nucleo 3x3: {nucleo}");
+        match crate::facelet::to_cubie(&nucleo) {
+            Ok(_) => println!("VEREDITO: nucleo LEGAL — o cubo e resolvivel"),
+            Err(e) => println!("VEREDITO: nucleo ILEGAL — {e}"),
+        }
+    }
+
+    /// As correcoes de paridade das asas tem de ter sinal IMPAR na orbita: e
+    /// isso que desfaz um par trocado (transposicao). Se forem pares, o
+    /// recomeco com prefixo nao muda nada — foi a suspeita levantada por um
+    /// 7x7 do uso real que parava sempre em 9/12, em todas as tentativas.
+    #[test]
+    #[ignore = "diagnóstico: sinal das correções de paridade"]
+    fn sinal_das_correcoes_de_paridade() {
+        for n in [5usize, 6, 7] {
+            let cn = cuben(n);
+            for oi in 0..cn.wing_orbits.len() {
+                let fixes = cn.wing_parity_fixes(oi);
+                let impares = fixes.iter().filter(|f| cn.seq_signs(f).0[oi]).count();
+                println!(
+                    "N={n} orbita {oi}: {} correcoes, {impares} com sinal impar",
+                    fixes.len()
+                );
+                // e o efeito real numa aresta virada: a correcao troca o par?
+                if let Some(f) = fixes.first() {
+                    println!("   primeira: {}", f.iter().map(|&m| cn.move_name(m)).collect::<Vec<_>>().join(" "));
+                }
+            }
         }
     }
 
