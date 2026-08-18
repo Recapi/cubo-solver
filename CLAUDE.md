@@ -92,9 +92,18 @@ genérica entra só como rede de segurança, depois dos degraus construtivos.
   custa 96 s onde a atual custa 38 s. Com 11 pares formados quem destrava o
   agrupamento é a *perturbação*, não a troca de paridade — e a coerente não
   perturba nada. Detalhes no comentário do `flip_alg` em `cuben.rs`.
-- As soluções são longas (~440 no 5×5, ~1200 no 7×7) contra ~200 de um humano.
-  O custo está no método: cada peça de centro consome um comutador de 8 a 12
-  movimentos mais a conjugação. Encurtar pede colocar mais peças por comutador.
+- As soluções ainda são longas (~365 no 5×5, ~808 no 6×6, ~1129 no 7×7)
+  contra ~200 de um humano. O raio-X (`raio_x_do_comprimento`, --ignored)
+  mostra a divisão por fase; a cadeia — o 3-ciclo cujo terceiro vértice é a
+  casa-lar do conteúdo deslocado, arrumando 2 peças por ciclo — já foi
+  aplicada às asas (custo por aresta ~30 → 21-28) e cortou 10-24% do total.
+  Próximos alvos: no 7×7 os centros voltaram a ser metade da conta (50,5%), e
+  as arestas ainda custam o dobro de um humano.
+- A simplificação final atribui movimentos às etapas pelo índice da lista já
+  encurtada (`etapa_de.get(i)` em `cuben.rs`), então após o primeiro
+  cancelamento os rótulos deslizam — a etapa "Resolver como 3x3" chega a
+  exibir 0 movimentos. Só afeta rótulo/interface, não a solução (verificada
+  por replay).
 - O 4×4 dedicado leva ~65 s por cubo (busca IDA* até profundidade 13 nos
   centros). O caminho genérico resolve o mesmo em segundos, com solução mais
   longa; trazer o 3-ciclo construído para dentro do `cube4.rs` daria os dois.
