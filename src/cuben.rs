@@ -2740,6 +2740,15 @@ impl CubeN {
         // do mais barato ao mais caro; nenhuma familia foi retirada, apenas
         // reordenada, e as varreduras instantaneas vem antes das genericas
         let t0 = std::time::Instant::now();
+        // Profundidade 2, e nao 3. Subir para 3 faz este degrau capturar mais
+        // pecas barato (38 -> 56, a 1.3 mov/peca) e mesmo assim o cubo INTEIRO
+        // piora: 828 -> 855 movimentos, com o macro12 indo de 5.5s para 11.4s.
+        //
+        // E a terceira medicao do mesmo fenomeno nesta escada, junto com o lote
+        // de centros (-4% de comprimento por +270% de tempo) e o lote de asas:
+        // pegar peca facil cedo deixa um fim de jogo mais caro, e a conta nao
+        // fecha. A escada esta num otimo local; ganho maior pede outro
+        // paradigma de busca, nao mais ajuste de degrau.
         for d in 1..=2usize {
             if let Some(r) = NSearch::run_at(self, cs, &goal, &h, d) {
                 marca("curta", t0, true);
@@ -2755,6 +2764,12 @@ impl CubeN {
             }
         }
         marca("macro12", t1, false);
+        // TENTADO: trazer a fatia-encaixa para ca, como rendeu nas ASAS (la ela
+        // estava atras do 3-ciclo e nunca rodava). Nos CENTROS nao adianta —
+        // ela nao dispara nenhuma vez e o 7x7 fica nos mesmos 828 movimentos,
+        // so gastando varredura. O motivo: aqui o `macro12` vem antes e ja
+        // cobre esse espaco (ele mesmo enumera macros com fatia), enquanto nas
+        // asas o degrau anterior e a busca curta, bem mais restrita.
         // Medido no 7x7: o 3-ciclo construido resolve 94 de 165 casos em tempo
         // desprezivel, enquanto `macro3` gastava 706s para acertar 10 de 175.
         // Por isso a construcao vem logo depois dos degraus baratos.
