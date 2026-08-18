@@ -26,7 +26,19 @@
     FACES.forEach(function (f) { for (var i = 0; i < N * N; i++) out += f; });
     return out;
   }
-  function isCenter(i) { return N === 3 && i % 9 === 4; }
+  /** Centro fixo do meio da face: existe só nos cubos ímpares e define o
+   *  esquema de cores, então vem pré-preenchido e é pulado no guiado. */
+  function isCenter(i) {
+    if (N % 2 === 0) return false;
+    return i % (N * N) === (N * N - 1) / 2;
+  }
+
+  /** Preenche os centros fixos (ímpares) com a cor canônica da face. */
+  function fillFixedCenters() {
+    if (N % 2 === 0) return;
+    var meio = (N * N - 1) / 2;
+    for (var f = 0; f < 6; f++) state[f * N * N + meio] = FACES[f];
+  }
 
   // Eixo e sentido da rotacao de camada de cada face (sinal = horario olhando
   // para a face, nas coordenadas 3D do CSS, onde o eixo y aponta para baixo).
@@ -63,11 +75,14 @@
 
   /** "R" -> gire um quarto de volta no horario; "R'" -> anti-horario; "R2" -> 180. */
   function moveDesc(name) {
+    var camadas = 2;
+    if (/^\d/.test(name)) { camadas = +name[0]; name = name.slice(1); }
     if (name.indexOf("w") > 0) {
       var g = FACE_PT[name[0]];
       var sufixo = name.slice(-1) === "'" ? "no sentido anti-horário"
         : name.slice(-1) === "2" ? "meia-volta" : "no sentido horário";
-      return "Gire as DUAS camadas " + g[0] + " (" + g[1] + ") juntas, " + sufixo + ".";
+      var qtd = camadas === 2 ? "as DUAS camadas" : "as " + camadas + " camadas";
+      return "Gire " + qtd + " " + g[0] + " (" + g[1] + ") juntas, " + sufixo + ".";
     }
     var f = FACE_PT[name[0]];
     var base = "Gire a face " + f[0] + " (" + f[1] + ") ";
@@ -106,7 +121,8 @@
     netCells = [];
     net.style.gridTemplateColumns = "repeat(" + 4 * N + ", var(--cell))";
     net.style.gridTemplateRows = "repeat(" + 3 * N + ", var(--cell))";
-    net.style.setProperty("--cell", N === 4 ? "23px" : N === 2 ? "38px" : "30px");
+    var cellPx = { 2: "38px", 3: "30px", 4: "23px", 5: "19px", 6: "16px", 7: "14px" };
+    net.style.setProperty("--cell", cellPx[N] || "30px");
     var off = { U: [0, N], L: [N, 0], F: [N, N], R: [N, 2 * N], B: [N, 3 * N], D: [2 * N, N] };
     FACES.forEach(function (f, fi) {
       var pos = off[f];
@@ -254,16 +270,29 @@
   }
 
   // --------------------------------------------------------------- animacao de camada
-  function layerOf(face) {
+  /** Cubinhos das `espessura` camadas a partir de `face` (1 = só a externa). */
+  function layerOf(face, espessura) {
+    var e = espessura || 1;
     var M = N - 1;
     return cubies.filter(function (cb) {
-      if (face === "U") return cb.y === 0;
-      if (face === "D") return cb.y === M;
-      if (face === "R") return cb.x === M;
-      if (face === "L") return cb.x === 0;
-      if (face === "F") return cb.z === M;
-      return cb.z === 0; // B
+      if (face === "U") return cb.y < e;
+      if (face === "D") return cb.y > M - e;
+      if (face === "R") return cb.x > M - e;
+      if (face === "L") return cb.x < e;
+      if (face === "F") return cb.z > M - e;
+      return cb.z < e; // B
     });
+  }
+
+  /** "R" -> 1 camada, "Rw" -> 2, "3Rw" -> 3. */
+  function thicknessOf(name) {
+    if (/^\d/.test(name)) return +name[0];
+    return name.indexOf("w") > 0 ? 2 : 1;
+  }
+
+  /** Tira o prefixo numérico: "3Rw2" -> "Rw2". */
+  function baseName(name) {
+    return /^\d/.test(name) ? name.slice(1) : name;
   }
 
   function resetCubies() {
@@ -292,11 +321,25 @@
   }
 
   /** Gira a camada do movimento `name` na tela e chama `done` ao terminar. */
+  /** Ritmo do player: soluções longas (cubos grandes) tocam mais rápido —
+   *  1200 movimentos a 1s cada seriam 20 minutos. */
+  function passoMs() {
+    var n = solution ? solution.length : 0;
+    if (n > 600) return 260;
+    if (n > 200) return 400;
+    if (n > 60) return 650;
+    return 1000;
+  }
+
   function animateMove(name, done) {
-    var t = TURN[name[0]];
-    var deg = t[1] * (name.length > 1 && name[1] === "'" ? -1 : name.length > 1 && name[1] === "2" ? 2 : 1);
-    var dur = name.length > 1 && name[1] === "2" ? 520 : 340;
-    var layer = layerOf(name[0]);
+    var espessura = thicknessOf(name);
+    var nome = baseName(name); // sem o prefixo numérico
+    var sufixo = nome.slice(nome.indexOf("w") > 0 ? 2 : 1); // "", "'" ou "2"
+    var t = TURN[nome[0]];
+    var deg = t[1] * (sufixo === "'" ? -1 : sufixo === "2" ? 2 : 1);
+    var teto = Math.max(120, passoMs() - 70); // a animação cabe no intervalo
+    var dur = Math.min(sufixo === "2" ? 520 : 340, teto);
+    var layer = layerOf(nome[0], espessura);
     resetCubies();
     // Comeca de "rotacao 0 graus" do MESMO eixo: com as listas de transform
     // identicas, o navegador interpola o angulo e a peca descreve um arco.
@@ -429,9 +472,7 @@
     if (complete()) {
       // cubo ja todo pintado: o guiado e para inserir um novo, comeca limpo
       state = ".".repeat(totalStickers()).split("");
-      if (N === 3) {
-        for (var f = 0; f < 6; f++) state[f * 9 + 4] = FACES[f];
-      }
+      fillFixedCenters();
       refresh();
     }
     guided = { stack: [], target: -1 };
@@ -466,7 +507,9 @@
     clearTargetMark();
     netCells[pos].classList.add("target");
     cubeCells[pos].classList.add("tgt3");
-    if (orientTo) orientTo(FACES[Math.floor(pos / 9)]);
+    // a face vem do tamanho do cubo (era fixo em 9: no 4x4 a camera virava
+    // para a face errada no meio do preenchimento)
+    if (orientTo) orientTo(FACES[Math.floor(pos / perFace())]);
     var faltam = state.filter(function (c) { return FACES.indexOf(c) < 0; }).length;
     say("Pinte o adesivo destacado — cores impossíveis ficam bloqueadas (faltam " + faltam + ").");
     setPaletteAllowed([]); // trava enquanto consulta o servidor
@@ -478,9 +521,7 @@
           // pintura previa (feita no modo livre) ja era impossivel
           say("O que já estava pintado é impossível — recomeçando do zero.", "err");
           state = ".".repeat(totalStickers()).split("");
-          if (N === 3) {
-            for (var f = 0; f < 6; f++) state[f * 9 + 4] = FACES[f];
-          }
+          fillFixedCenters();
           guided.stack = [];
           refresh();
           nextTarget();
@@ -577,7 +618,11 @@
     resetSolution();
     refresh();
     say("");
-    api("/api/" + N + "/solve", { facelets: state.join("") })
+    // 5x5+ leva minutos: job com progresso em vez de espera cega
+    var pedido = N >= 5
+      ? api("/api/" + N + "/solve", { facelets: state.join("") }).then(seguirJobGrande)
+      : api("/api/" + N + "/solve", { facelets: state.join("") });
+    pedido
       .then(function (j) {
         solution = {
           solution: j.solution,
@@ -610,6 +655,34 @@
         btn.disabled = false;
         btn.textContent = solveLabel();
       });
+  }
+
+  /** Acompanha um job de cubo grande ate o fim, mostrando a etapa atual. */
+  function seguirJobGrande(inicio) {
+    var id = inicio.job;
+    return new Promise(function (resolve, reject) {
+      var tick = function () {
+        fetch("/api/big/status/" + id)
+          .then(function (r) { return r.json(); })
+          .then(function (s) {
+            if (s.error) { reject(new Error(s.error)); return; }
+            if (s.done) {
+              if (!s.result) { reject(new Error("job sem resultado")); return; }
+              resolve(s.result);
+              return;
+            }
+            var seg = Math.round((s.elapsed_ms || 0) / 1000);
+            say(
+              (s.stage || "resolvendo") + "… " + (s.moves || 0) +
+              " movimentos até agora (" + seg + "s)",
+              ""
+            );
+            setTimeout(tick, 700);
+          })
+          .catch(reject);
+      };
+      tick();
+    });
   }
 
   function renderChipsSimple(names) {
@@ -650,7 +723,7 @@
   }
 
   function solveLabel() {
-    return N === 2 ? "Resolver (ótimo)" : N === 4 ? "Resolver por etapas" : "Resolver";
+    return N === 2 ? "Resolver (ótimo)" : N >= 4 ? "Resolver por etapas" : "Resolver";
   }
 
   function setSize(n) {
@@ -977,16 +1050,16 @@
     setStep(i);
   }
 
-  /** Avanca um passo girando a camada na tela (4x4 usa transicao direta,
-   *  porque os movimentos wide giram duas camadas). */
+  /** Avanca um passo girando a camada na tela — em qualquer tamanho, inclusive
+   *  os movimentos de camada grossa (Rw, 3Rw), que giram 2 ou 3 camadas. */
   function stepForward() {
     if (!solution || solution.length === 0) return;
     finishAnim(); // se ja tinha uma girando, aterrissa ela primeiro
     if (step >= solution.length) return;
     var target = step + 1;
     var name = solution.solution[step];
-    if (N === 4 || name.indexOf("w") > 0) {
-      jump(target);
+    if (!TURN[baseName(name)[0]]) {
+      jump(target); // notação inesperada: aplica sem animar
       return;
     }
     animateMove(name, function () { setStep(target); });
@@ -1006,7 +1079,7 @@
     timer = setInterval(function () {
       if (!solution || step >= solution.length) { stopPlay(); return; }
       stepForward();
-    }, 1000);
+    }, passoMs());
   }
 
   // --------------------------------------------------------------- init
@@ -1030,9 +1103,7 @@
   });
   $("btn-clear").addEventListener("click", function () {
     state = ".".repeat(totalStickers()).split("");
-    if (N === 3) {
-      for (var f = 0; f < 6; f++) state[f * 9 + 4] = FACES[f];
-    }
+    fillFixedCenters();
     stateChanged();
   });
   $("size").addEventListener("change", function (e) { setSize(+e.target.value); });

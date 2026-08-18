@@ -3,6 +3,7 @@ mod coord;
 mod cube;
 mod cube2;
 mod cube4;
+mod cuben;
 mod facelet;
 mod optimal;
 mod partial;
@@ -15,7 +16,7 @@ use std::sync::Arc;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use axum::{
-    extract::State,
+    extract::{Path, State},
     http::{header, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -286,6 +287,16 @@ struct AppState {
     tables: Arc<Tables>,
     jobs: Arc<std::sync::Mutex<std::collections::HashMap<u64, Arc<OptJob>>>>,
     next_job: Arc<std::sync::atomic::AtomicU64>,
+    njobs: Arc<std::sync::Mutex<std::collections::HashMap<u64, Arc<NJob>>>>,
+}
+
+/// Job de reducao de cubo grande (5x5+): pode levar minutos.
+struct NJob {
+    started: Instant,
+    done: std::sync::atomic::AtomicBool,
+    stage: std::sync::Mutex<String>,
+    moves: std::sync::atomic::AtomicUsize,
+    result: std::sync::Mutex<Option<Result<serde_json::Value, String>>>,
 }
 
 async fn api_solve(
@@ -595,6 +606,157 @@ async fn api4_solve(
         "states": s.states,
         "time_ms": ms as u64,
     })))
+}
+
+fn check_big_n(n: usize) -> Result<usize, ApiError> {
+    if (5..=7).contains(&n) {
+        Ok(n)
+    } else {
+        Err(bad_request(format!("tamanho nao suportado: {n}")))
+    }
+}
+
+async fn apin_scramble(
+    State(_st): State<AppState>,
+    Path(n): Path<usize>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let n = check_big_n(n)?;
+    let (f, notation) = tokio::task::spawn_blocking(move || {
+        let mut rng = Rng::new();
+        cuben::scramble_n(n, move |m| rng.below(m))
+    })
+    .await
+    .map_err(|e| bad_request(format!("falha interna: {e}")))?;
+    Ok(Json(serde_json::json!({ "facelets": f, "notation": notation })))
+}
+
+async fn apin_apply(
+    State(_st): State<AppState>,
+    Path(n): Path<usize>,
+    Json(req): Json<SizeReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let n = check_big_n(n)?;
+    let (f, mv) = (req.facelets.unwrap_or_default(), req.moves.unwrap_or_default());
+    let out = tokio::task::spawn_blocking(move || cuben::apply_n(n, &f, &mv))
+        .await
+        .map_err(|e| bad_request(format!("falha interna: {e}")))?
+        .map_err(bad_request)?;
+    Ok(Json(serde_json::json!({ "facelets": out })))
+}
+
+fn solve_n_json(s: &cuben::SolveN, ms: u128) -> serde_json::Value {
+    let mut stage_of = Vec::new();
+    let mut all: Vec<String> = Vec::new();
+    for (si, stg) in s.stages.iter().enumerate() {
+        for tk in &stg.tokens {
+            stage_of.push(si);
+            all.push(tk.clone());
+        }
+    }
+    serde_json::json!({
+        "stages": s.stages.iter().map(|x| serde_json::json!({
+            "name": x.name, "info": x.info, "moves": x.tokens,
+            "notation": x.tokens.join(" "),
+        })).collect::<Vec<_>>(),
+        "solution": all,
+        "notation": all.join(" "),
+        "stage_of": stage_of,
+        "length": s.length,
+        "states": s.states,
+        "time_ms": ms as u64,
+    })
+}
+
+/// Cubos grandes levam minutos: a resolucao vira job com progresso.
+async fn apin_allowed(
+    State(_st): State<AppState>,
+    Path(n): Path<usize>,
+    Json(req): Json<AllowedReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let n = check_big_n(n)?;
+    let (fac, pos) = (req.facelets.clone(), req.pos);
+    let cols = tokio::task::spawn_blocking(move || cuben::allowed_colors_n(n, &fac, pos))
+        .await
+        .map_err(|e| bad_request(format!("falha interna: {e}")))?
+        .map_err(bad_request)?;
+    let letters: Vec<String> =
+        cols.iter().map(|&c| "URFDLB".chars().nth(c).unwrap().to_string()).collect();
+    Ok(Json(serde_json::json!({ "colors": letters })))
+}
+
+async fn apin_solve_start(
+    State(st): State<AppState>,
+    Path(n): Path<usize>,
+    Json(req): Json<SizeReq>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let n = check_big_n(n)?;
+    let f = req.facelets.unwrap_or_default();
+
+    {
+        let mut jobs = st.njobs.lock().unwrap();
+        jobs.retain(|_, j| {
+            !(j.done.load(std::sync::atomic::Ordering::Relaxed)
+                && j.started.elapsed().as_secs() > 3600)
+        });
+    }
+
+    let id = st.next_job.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    let job = Arc::new(NJob {
+        started: Instant::now(),
+        done: std::sync::atomic::AtomicBool::new(false),
+        stage: std::sync::Mutex::new("preparando".into()),
+        moves: std::sync::atomic::AtomicUsize::new(0),
+        result: std::sync::Mutex::new(None),
+    });
+    st.njobs.lock().unwrap().insert(id, job.clone());
+
+    let tables = st.tables.clone();
+    tokio::task::spawn_blocking(move || {
+        let start = Instant::now();
+        let j = job.clone();
+        let prog = move |msg: &str, len: usize| {
+            *j.stage.lock().unwrap() = msg.to_string();
+            j.moves.store(len, std::sync::atomic::Ordering::Relaxed);
+        };
+        let out = cuben::solve_n_prog(n, &f, &tables, Some(&prog))
+            .map(|s| solve_n_json(&s, start.elapsed().as_millis()));
+        *job.result.lock().unwrap() = Some(out);
+        job.done.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+
+    Ok(Json(serde_json::json!({ "job": id })))
+}
+
+async fn apin_solve_status(
+    State(st): State<AppState>,
+    Path(id): Path<u64>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let job = st
+        .njobs
+        .lock()
+        .unwrap()
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| bad_request("job desconhecido".into()))?;
+    use std::sync::atomic::Ordering::Relaxed;
+    let done = job.done.load(Relaxed);
+    let mut v = serde_json::json!({
+        "done": done,
+        "elapsed_ms": job.started.elapsed().as_millis() as u64,
+        "stage": job.stage.lock().unwrap().clone(),
+        "moves": job.moves.load(Relaxed),
+    });
+    if done {
+        let guard = job.result.lock().unwrap();
+        match guard.as_ref() {
+            Some(Ok(r)) => v["result"] = r.clone(),
+            Some(Err(e)) => v["error"] = serde_json::Value::String(e.clone()),
+            None => {}
+        }
+        drop(guard);
+        st.njobs.lock().unwrap().remove(&id);
+    }
+    Ok(Json(v))
 }
 
 #[derive(Deserialize)]
@@ -1011,6 +1173,7 @@ async fn main() {
         tables,
         jobs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
         next_job: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        njobs: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
     };
     let app = Router::new()
         .route("/", get(page_index))
@@ -1029,6 +1192,11 @@ async fn main() {
         .route("/api/4/apply", post(api4_apply))
         .route("/api/4/solve", post(api4_solve))
         .route("/api/4/allowed", post(api4_allowed))
+        .route("/api/{n}/scramble", post(apin_scramble))
+        .route("/api/{n}/apply", post(apin_apply))
+        .route("/api/{n}/solve", post(apin_solve_start))
+        .route("/api/{n}/allowed", post(apin_allowed))
+        .route("/api/big/status/{id}", get(apin_solve_status))
         .route("/api/optimal/start", post(api_opt_start))
         .route("/api/optimal/status/{id}", get(api_opt_status))
         .route("/api/optimal/cancel/{id}", post(api_opt_cancel))
@@ -1660,6 +1828,55 @@ mod tests {
             total += sol.length;
         }
         println!("4x4: media de {:.1} movimentos", total as f64 / 8.0);
+    }
+
+    #[test]
+    fn cubon_movimentos_tem_ordem_4() {
+        for n in [5usize, 6, 7] {
+            let cn = cuben::cuben(n);
+            let solved = cn.solved();
+            for m in 0..cn.n_moves {
+                let mut s = solved.clone();
+                for _ in 0..4 {
+                    cn.apply(&mut s, m);
+                }
+                assert_eq!(s, solved, "N={n}: movimento {m} nao tem ordem 4");
+            }
+        }
+    }
+
+    #[test]
+    fn cubon_reducao_resolve() {
+        let tables = Tables::build();
+        let mut rng = Rng::new();
+        for n in [5usize, 6, 7] {
+            let mut total = 0usize;
+            let casos = 2;
+            for i in 0..casos {
+                let (f, _) = cuben::scramble_n(n, |m| rng.below(m));
+                println!("{n}x{n} caso {i}: resolvendo...");
+                let t0 = std::time::Instant::now();
+                let sol = cuben::solve_n(n, &f, &tables)
+                    .unwrap_or_else(|e| panic!("N={n} caso {i}: {e}"));
+                println!(
+                    "{n}x{n} caso {i}: {} movimentos em {:.1}s",
+                    sol.length,
+                    t0.elapsed().as_secs_f64()
+                );
+                let last = sol.states.last().unwrap();
+                let bytes: Vec<char> = last.chars().collect();
+                let per = n * n;
+                for face in 0..6 {
+                    let c0 = bytes[face * per];
+                    assert!(
+                        (0..per).all(|k| bytes[face * per + k] == c0),
+                        "N={n} caso {i}: face {face} nao uniforme"
+                    );
+                }
+                total += sol.length;
+            }
+            println!("{n}x{n}: media de {:.1} movimentos", total as f64 / casos as f64);
+        }
     }
 
     #[test]

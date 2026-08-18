@@ -1,7 +1,7 @@
-# Solver de Cubo Mágico (2×2, 3×3 e 4×4)
+# Solver de Cubo Mágico (2×2 a 7×7)
 
 Página web onde você pinta as cores do seu cubo e recebe a solução. Servidor e
-algoritmos em Rust, sem dependências de solver externas. Três tamanhos:
+algoritmos em Rust, sem dependências de solver externas. Seis tamanhos:
 
 - **3×3** — o carro-chefe: soluções ≤ 20 movimentos, modo ótimo com prova,
   CFOP por etapas, entrada guiada com validação em tempo real;
@@ -9,7 +9,38 @@ algoritmos em Rust, sem dependências de solver externas. Três tamanhos:
   estados, máximo 11 movimentos, instantâneo);
 - **4×4** — resolvido por **redução** (centros → parear arestas → resolver como
   3×3), com as paridades OLL/PLL corrigidas por algoritmos certificados por
-  simulação; ~110 movimentos e etapas nomeadas no player.
+  simulação; ~110 movimentos e etapas nomeadas no player;
+- **5×5, 6×6 e 7×7** — redução genérica, com o fim de jogo **construído** em vez
+  de procurado (ver abaixo). Medido: ~470 movimentos em 3 s no 5×5, ~930 em
+  10–20 s no 6×6, ~1215 em 80–165 s no 7×7. Como levam minutos, a interface
+  acompanha por job com progresso em vez de esperar a requisição.
+
+## A ideia que fez os cubos grandes funcionarem
+
+Nos cubos grandes, buscar sequências não escala: o fim de jogo pede um movimento
+*cirúrgico* (mexer três peças e mais nada), e busca genérica gasta minutos sem
+achar. A saída foi trocar procura por construção, em três passos:
+
+1. **Achar um 3-ciclo puro por órbita.** Um comutador `[W, b]` que permuta
+   exatamente 3 peças de uma órbita e deixa todo o resto intacto. Existe para
+   todas as órbitas de centros e de asas dos três tamanhos (8 a 12 movimentos).
+   O ingrediente que faltava era a **fatia pura** — uma camada isolada, que
+   neste conjunto de movimentos é a composição `3Rw·Rw'`; sem ela as órbitas
+   internas não têm 3-ciclo puro.
+2. **Conjugar para onde se precisa.** Conjugação preserva o tamanho do suporte,
+   então `V·C·V⁻¹` também mexe em exatamente 3 peças — só muda *quais*. Uma
+   busca em largura sobre trios de casas (13.824 estados, pré-computada por
+   órbita) dá o `V` para qualquer trio, instantaneamente.
+3. **Subir uma medida monotônica.** A montagem dos centros aumenta "quantos
+   centros estão na face certa" a cada passo; com o 3-ciclo construído o
+   progresso é garantido, sem platô nem reinício aleatório.
+
+As paridades também são **derivadas, não decoradas**: um par de asas trocado é
+uma transposição, logo só uma sequência de sinal **ímpar** naquela órbita a
+desfaz. O solver calcula o sinal das permutações e escolhe uma sequência ímpar
+na órbita travada e par nas outras (medido: os ímpares são os giros largos, e a
+fatia pura é par — é o tipo de detalhe que só o cálculo revela). Ver os testes
+`base_3ciclos_*` e `movimentos_impares_das_asas`, que registram esses fatos.
 
 ## Rodar
 

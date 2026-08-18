@@ -283,7 +283,8 @@ select {
 
 .hidden { display: none !important; }
 /* controles exclusivos do 3x3 somem nos outros tamanhos */
-body.size-2 .only3, body.size-4 .only3 { display: none !important; }
+body.size-2 .only3, body.size-4 .only3,
+body.size-5 .only3, body.size-6 .only3, body.size-7 .only3 { display: none !important; }
 .size-pick { margin-left: auto; }
 .size-pick select { font-weight: 600; }
 
