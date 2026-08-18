@@ -92,13 +92,16 @@ genérica entra só como rede de segurança, depois dos degraus construtivos.
   custa 96 s onde a atual custa 38 s. Com 11 pares formados quem destrava o
   agrupamento é a *perturbação*, não a troca de paridade — e a coerente não
   perturba nada. Detalhes no comentário do `flip_alg` em `cuben.rs`.
-- As soluções ainda são longas (~365 no 5×5, ~808 no 6×6, ~1129 no 7×7)
+- As soluções ainda são longas (~377 no 5×5, ~739 no 6×6, ~1038 no 7×7)
   contra ~200 de um humano. O raio-X (`raio_x_do_comprimento`, --ignored)
-  mostra a divisão por fase; a cadeia — o 3-ciclo cujo terceiro vértice é a
-  casa-lar do conteúdo deslocado, arrumando 2 peças por ciclo — já foi
-  aplicada às asas (custo por aresta ~30 → 21-28) e cortou 10-24% do total.
-  Próximos alvos: no 7×7 os centros voltaram a ser metade da conta (50,5%), e
-  as arestas ainda custam o dobro de um humano.
+  mostra a divisão por fase; as linhas `CGASTO`/`WGASTO` (CUBEN_DEBUG=1)
+  dizem quem produz os movimentos e a que custo por peça/par. A receita que
+  rendeu três vezes: cadeia (o 3-ciclo cujo terceiro vértice é a casa-lar do
+  conteúdo deslocado) + pool de até 16 candidatos aceitos ATRAVÉS dos alvos,
+  escolhendo por peças/pares, depois comprimento. Asas: 19,2 → 16,5 mov/par.
+  O próximo salto grande pede outro método: fatia-encaixa em lote (várias
+  arestas por fatia), como um humano faz — as asas ainda custam 16,5 contra
+  ~10 de um humano.
 - A simplificação final atribui movimentos às etapas pelo índice da lista já
   encurtada (`etapa_de.get(i)` em `cuben.rs`), então após o primeiro
   cancelamento os rótulos deslizam — a etapa "Resolver como 3x3" chega a
