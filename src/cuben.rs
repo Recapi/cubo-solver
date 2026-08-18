@@ -828,7 +828,7 @@ pub fn solve_n_prog(
                     }),
                 }
             }
-            if novo_estado == cn.solved() {
+            if cn.faces_uniformes(&novo_estado) {
                 if dbg >= 1 {
                     eprintln!(
                         "simplificacao: {} -> {} movimentos",
@@ -843,7 +843,10 @@ pub fn solve_n_prog(
         }
     }
 
-    if state != cn.solved() {
+    // Resolvido = seis faces de cor unica. Nao se exige a orientacao original:
+    // nos impares os centros do meio so mudam de lugar girando o cubo inteiro,
+    // o que este conjunto de movimentos nao faz.
+    if !cn.faces_uniformes(&state) {
         return Err("erro interno: o cubo nao fechou".into());
     }
     let length = stages.iter().map(|s| s.tokens.len()).sum();
@@ -852,11 +855,30 @@ pub fn solve_n_prog(
 
 impl CubeN {
     /// Estado reduzido -> planificacao 3x3 (letras U..B).
+    /// Cubo resolvido de verdade: cada face com uma cor so.
+    pub fn faces_uniformes(&self, state: &[u8]) -> bool {
+        let por_face = self.n * self.n;
+        (0..6).all(|f| {
+            let c0 = state[f * por_face];
+            (0..por_face).all(|k| state[f * por_face + k] == c0)
+        })
+    }
+
     fn reduce_to_3x3(&self, state: &[u8]) -> String {
         use crate::facelet::{CORNER_FACELET, EDGE_FACELET, FACE_CHARS};
         let mut out = [b'?'; 54];
+        // O centro de cada face do 3x3 recebe a cor REAL daquela face: nos
+        // impares ela vem do centro do meio, que pode nao coincidir com o
+        // indice (o cubo pode ter ficado numa orientacao diferente).
         for f in 0..6 {
-            out[f * 9 + 4] = FACE_CHARS[f];
+            let cor = match self.midge_facelets {
+                Some(_) => {
+                    let meio = (self.n - 1) / 2;
+                    state[p(self.n, f, meio, meio)] as usize
+                }
+                None => f,
+            };
+            out[f * 9 + 4] = FACE_CHARS[cor];
         }
         for i in 0..8 {
             for k in 0..3 {
@@ -2071,16 +2093,13 @@ fn subset_rank(sorted: &[u8; 4]) -> usize {
 // ---------------------------------------------------------------------------
 
 impl CubeN {
+    /// Centros prontos = cada peca com a cor do centro do MEIO da sua face
+    /// (ver `center_total`: a orientacao do cubo nao e exigida).
     fn c_centers_solved(&self, s: &SN, orbits: usize, faces_of_last: &[u8]) -> bool {
-        // os centros do meio (impar) precisam estar no lugar sempre
-        if (0..6).any(|f| s.mid[f] != f as u8) {
-            return false;
-        }
-        // orbitas 0..orbits-1 completas; a orbita `orbits` (se listada) so as faces dadas
         for oi in 0..orbits {
-            for face in 0..6u8 {
+            for face in 0..6usize {
                 for k in 0..4 {
-                    if s.cent[oi * 24 + face as usize * 4 + k] != face {
+                    if s.cent[oi * 24 + face * 4 + k] != s.mid[face] {
                         return false;
                     }
                 }
@@ -2089,7 +2108,7 @@ impl CubeN {
         if orbits < self.center_orbits.len() {
             for &face in faces_of_last {
                 for k in 0..4 {
-                    if s.cent[orbits * 24 + face as usize * 4 + k] != face {
+                    if s.cent[orbits * 24 + face as usize * 4 + k] != s.mid[face as usize] {
                         return false;
                     }
                 }
@@ -2194,23 +2213,28 @@ impl CubeN {
     /// Quantos centros estao na face certa, somando todas as orbitas (mais os
     /// centros do meio nos cubos impares). E a medida que a montagem dos
     /// centros faz subir: monotonica, logo sem ciclo constroi-destroi.
+    /// A cor de uma face e a do seu centro do MEIO, nao o indice da face.
+    ///
+    /// Num cubo impar os centros do meio sao presos ao nucleo: so mudam de
+    /// lugar girando o cubo inteiro, e o conjunto de movimentos aqui vai ate
+    /// (n+1)/2 camadas — nao ha essa rotacao. Exigir `mid[f] == f` pedia uma
+    /// orientacao inalcancavel: medido, o 7x7 empacava em 146/150 com as 144
+    /// pecas de orbita ja certas e so os meios "fora do lugar". Fisicamente o
+    /// cubo estava resolvido, so segurado de outro jeito.
     fn center_total(&self, s: &SN) -> usize {
         let mut c = 0;
         for oi in 0..self.center_orbits.len() {
             for i in 0..24 {
-                if s.cent[oi * 24 + i] as usize == i / 4 {
+                if s.cent[oi * 24 + i] == s.mid[i / 4] {
                     c += 1;
                 }
             }
-        }
-        if self.midge_facelets.is_some() {
-            c += (0..6).filter(|&f| s.mid[f] == f as u8).count();
         }
         c
     }
 
     fn center_total_max(&self) -> usize {
-        24 * self.center_orbits.len() + if self.midge_facelets.is_some() { 6 } else { 0 }
+        24 * self.center_orbits.len()
     }
 
     /// Varredura direta de comutadores `V · a b a' b' · V'`, com |V| = niveis.
@@ -3273,25 +3297,28 @@ impl CubeN {
             if self.base3[oi].is_none() {
                 continue;
             }
-            let cor = |i: usize| cs.cent[oi * 24 + i] as usize;
-            let face = |i: usize| i / 4;
-            let erradas: Vec<usize> = (0..24).filter(|&i| cor(i) != face(i)).collect();
+            // A cor certa de uma casa e a do centro do MEIO da face dela (o
+            // cubo pode estar numa orientacao diferente da canonica).
+            let cor = |i: usize| cs.cent[oi * 24 + i];
+            let cor_da_face = |f: usize| cs.mid[f];
+            let face_da_cor = |c: u8| (0..6).find(|&f| cs.mid[f] == c).unwrap_or(0);
+            let erradas: Vec<usize> =
+                (0..24).filter(|&i| cor(i) != cor_da_face(i / 4)).collect();
             if erradas.len() < 2 {
                 continue;
             }
             for &p in &erradas {
-                let destino_p = cor(p); // face onde a peca de p pertence
+                let destino_p = face_da_cor(cor(p)); // face onde a peca de p pertence
                 // q: casa errada na face de destino de p
-                for &q in erradas.iter().filter(|&&q| q != p && face(q) == destino_p) {
-                    let destino_q = cor(q);
+                for &q in erradas.iter().filter(|&&q| q != p && q / 4 == destino_p) {
+                    let destino_q = face_da_cor(cor(q));
                     // r: casa na face de destino de q (errada de preferencia)
                     let candidatos_r = erradas
                         .iter()
                         .copied()
-                        .filter(|&r| r != p && r != q && face(r) == destino_q)
+                        .filter(|&r| r != p && r != q && r / 4 == destino_q)
                         .chain(
-                            (0..24)
-                                .filter(|&r| r != p && r != q && face(r) == destino_q),
+                            (0..24).filter(|&r| r != p && r != q && r / 4 == destino_q),
                         );
                     for r in candidatos_r {
                         // tenta as duas orientacoes do ciclo
@@ -3330,17 +3357,26 @@ impl CubeN {
             if self.base3[oi].is_none() {
                 continue;
             }
-            let cor = |s: &SN, i: usize| s.cent[oi * 24 + i] as usize;
-            let face = |i: usize| i / 4;
-            let erradas: Vec<usize> = (0..24).filter(|&i| cor(cs, i) != face(i)).collect();
+            // mesma regra da busca direta: a cor certa vem do centro do meio
+            let cor = |s: &SN, i: usize| s.cent[oi * 24 + i];
+            let face_da_cor = |c: u8| (0..6).find(|&f| cs.mid[f] == c).unwrap_or(0);
+            let erradas: Vec<usize> =
+                (0..24).filter(|&i| cor(cs, i) != cs.mid[i / 4]).collect();
+            // Ordem importa: as casas ERRADAS primeiro. Percorrer as 24 casas
+            // em ordem numerica esgotava o teto antes de chegar nas uteis.
+            let ordem: Vec<usize> = erradas
+                .iter()
+                .copied()
+                .chain((0..24).filter(|k| !erradas.contains(k)))
+                .collect();
             for &p in &erradas {
-                let destino = cor(cs, p);
-                for &q in erradas.iter().filter(|&&q| q != p && face(q) == destino) {
-                    for m in 0..24usize {
+                let destino = face_da_cor(cor(cs, p));
+                for &q in erradas.iter().filter(|&&q| q != p && q / 4 == destino) {
+                    for &m in &ordem {
                         if m == p || m == q {
                             continue;
                         }
-                        for r1 in 0..24usize {
+                        for &r1 in &ordem {
                             if r1 == p || r1 == m {
                                 continue;
                             }
@@ -3352,7 +3388,7 @@ impl CubeN {
                             for &mv in &s1 {
                                 e1 = self.capply(&e1, mv);
                             }
-                            for r2 in 0..24usize {
+                            for &r2 in &ordem {
                                 if r2 == m || r2 == q {
                                     continue;
                                 }
@@ -3895,6 +3931,239 @@ mod tests {
                 println!(
                     "  cand {i}: centros_ok={centros_ok} tipos_mexidos={tipos} bits_virados={bits} invertidos={inv:?}"
                 );
+            }
+        }
+    }
+
+    /// Nos cubos ímpares, os centros do meio só se movem com fatias profundas,
+    /// que desarrumam as órbitas — então, quando só eles ficam fora do lugar, o
+    /// solver empaca (medido: 146/150 no 7x7, com as 144 peças de órbita já
+    /// certas). Procura uma sequência que 3-cicle os centros do meio SEM mexer
+    /// nas órbitas; achando, o fim de jogo deixa de ser busca.
+    #[test]
+    fn acha_3ciclo_dos_centros_do_meio() {
+        let inv = |m: usize| (m / 3) * 3 + (2 - m % 3);
+        for n in [5usize, 7] {
+            let cn = cuben(n);
+            let base = cn.cstate_of(&cn.solved());
+            let atomos = cn.atoms();
+            let mut achou: Option<(String, Vec<u8>)> = None;
+            'busca: for a1 in &atomos {
+                for a2 in &atomos {
+                    // W = a1 a2, b = a2' — comutadores curtos sobre os atomos
+                    for b in &atomos {
+                        let mut seq: Vec<usize> = a1.clone();
+                        seq.extend(a2.iter().copied());
+                        seq.extend(b.iter().copied());
+                        seq.extend(a2.iter().rev().map(|&m| inv(m)));
+                        seq.extend(a1.iter().rev().map(|&m| inv(m)));
+                        seq.extend(b.iter().rev().map(|&m| inv(m)));
+                        let mut s = base;
+                        for &m in &seq {
+                            s = cn.capply(&s, m);
+                        }
+                        if s.cent != base.cent || s.mid == base.mid {
+                            continue; // mexeu nas orbitas, ou nao mexeu no meio
+                        }
+                        let mexidos = (0..6).filter(|&f| s.mid[f] != base.mid[f]).count();
+                        if mexidos == 3 {
+                            achou = Some((
+                                seq.iter()
+                                    .map(|&m| cn.move_name(m))
+                                    .collect::<Vec<_>>()
+                                    .join(" "),
+                                s.mid.to_vec(),
+                            ));
+                            break 'busca;
+                        }
+                    }
+                }
+            }
+            match achou {
+                Some((seq, mid)) => println!("N={n}: 3-ciclo dos meios: {seq}  -> mid {mid:?}"),
+                None => println!("N={n}: NAO achei 3-ciclo puro dos centros do meio"),
+            }
+        }
+    }
+
+    /// O 3-ciclo construído só alcança os trios que a árvore de conjugação
+    /// cobre. Se a cobertura for parcial, há peças que ele NUNCA arruma — e
+    /// nenhuma reordenação de busca resolve isso. Mede a cobertura por órbita.
+    #[test]
+    fn cobertura_das_arvores_de_trio() {
+        for n in [5usize, 6, 7] {
+            let cn = cuben(n);
+            let total_trios = 24 * 23 * 22; // trios de casas distintas
+            println!("\nN={n} (trios distintos: {total_trios}):");
+            for (oi, arvore) in cn.triple_trees.iter().enumerate() {
+                if arvore.is_empty() {
+                    println!("  centros órbita {oi}: sem árvore");
+                    continue;
+                }
+                let alcancados = arvore.iter().filter(|(_, m)| *m != u8::MAX).count();
+                println!(
+                    "  centros órbita {oi}: {alcancados} de {total_trios} ({:.0}%)",
+                    alcancados as f64 * 100.0 / total_trios as f64
+                );
+            }
+            for (oi, arvore) in cn.wing_trees.iter().enumerate() {
+                if arvore.is_empty() {
+                    println!("  asas órbita {oi}: sem árvore");
+                    continue;
+                }
+                let alcancados = arvore.iter().filter(|(_, m)| *m != u8::MAX).count();
+                println!(
+                    "  asas órbita {oi}: {alcancados} de {total_trios} ({:.0}%)",
+                    alcancados as f64 * 100.0 / total_trios as f64
+                );
+            }
+        }
+    }
+
+    /// O caso lento do 7x7 (semente 1072 da régua) leva ~9 minutos. Este teste
+    /// mostra ONDE ele gasta: em que contagem de centros/asas empaca, quantos
+    /// reinícios faz e quanto custa cada degrau.
+    /// O mesmo caso, mas pelo pipeline inteiro: mede quanto vai para centros,
+    /// asas e paridade. Rodar com CUBEN_DEBUG=1 para ver os degraus.
+    #[test]
+    #[ignore = "diagnóstico do caso lento do 7x7 (pipeline completo)"]
+    fn diagnostico_7x7_pipeline() {
+        let tables = Tables::build();
+        let cn = cuben(7);
+        let st = lcg_scramble(&cn, 1072, 70);
+        let entrada = cn.render(&st, &['U', 'R', 'F', 'D', 'L', 'B']);
+        let t0 = std::time::Instant::now();
+        let sol = solve_n(7, &entrada, &tables).expect("resolver");
+        println!(
+            "7x7 semente 1072: {} movimentos em {:.1}s, {} etapas",
+            sol.length,
+            t0.elapsed().as_secs_f64(),
+            sol.stages.len()
+        );
+        // quanto foi para cada tipo de etapa
+        let mut por_nome: Vec<(String, usize)> = Vec::new();
+        for s in &sol.stages {
+            let chave = s.name.split(" (").next().unwrap_or(&s.name).to_string();
+            match por_nome.iter_mut().find(|(n, _)| *n == chave) {
+                Some((_, q)) => *q += s.tokens.len(),
+                None => por_nome.push((chave, s.tokens.len())),
+            }
+        }
+        por_nome.sort_by_key(|(_, q)| std::cmp::Reverse(*q));
+        for (nome, q) in por_nome {
+            println!("  {q:5} movimentos — {nome}");
+        }
+    }
+
+    /// Reproduz a fase de centros COMO O PIPELINE faz (a partir do estado
+    /// interpretado, não do embaralhado cru) e, na primeira vez que o passo
+    /// construtivo falha, mostra exatamente quais peças estão fora e onde.
+    #[test]
+    #[ignore = "diagnóstico: por que os centros empacam em 146/150"]
+    fn diagnostico_centros_travados() {
+        let cn = cuben(7);
+        let bruto = lcg_scramble(&cn, 1072, 70);
+        let entrada = cn.render(&bruto, &['U', 'R', 'F', 'D', 'L', 'B']);
+        let (mut state, _letras) = cn.parse(&entrada).expect("interpretar");
+        let alvo = cn.center_total_max();
+        for passo in 0..400 {
+            let cs = cn.cstate_of(&state);
+            let total = cn.center_total(&cs);
+            if total == alvo {
+                println!("centros fecharam em {passo} passos");
+                return;
+            }
+            match cn.improve_centers(&cs, total) {
+                Some(seq) => {
+                    for m in seq {
+                        cn.apply(&mut state, m);
+                    }
+                }
+                None => {
+                    println!("\nEMPACOU em {total}/{alvo} (passo {passo}):");
+                    for oi in 0..cn.center_orbits.len() {
+                        let erradas: Vec<String> = (0..24)
+                            .filter(|&i| cs.cent[oi * 24 + i] as usize != i / 4)
+                            .map(|i| {
+                                format!(
+                                    "casa {i} (face {}) tem cor {}",
+                                    i / 4,
+                                    cs.cent[oi * 24 + i]
+                                )
+                            })
+                            .collect();
+                        if !erradas.is_empty() {
+                            println!("  órbita {oi}: {}", erradas.join("; "));
+                        }
+                    }
+                    let cons = cn.constructive_center_step_teto(&cs, 500_000).is_some();
+                    println!("  construtivo com teto alto acha algo? {cons}");
+                    return;
+                }
+            }
+        }
+        println!("nao empacou em 400 passos");
+    }
+
+    #[test]
+    #[ignore = "diagnóstico do caso lento do 7x7"]
+    fn diagnostico_7x7_lento() {
+        let cn = cuben(7);
+        let mut state = lcg_scramble(&cn, 1072, 70);
+        let alvo = cn.center_total_max();
+        let mut passos = 0;
+        let mut travas = 0;
+        let t0 = std::time::Instant::now();
+        let mut ultimo_total = 0usize;
+        let mut repeticoes = 0;
+        loop {
+            let cs = cn.cstate_of(&state);
+            let total = cn.center_total(&cs);
+            if total == alvo {
+                println!(
+                    "centros fecharam em {passos} passos, {travas} sem avanço, {:.1}s",
+                    t0.elapsed().as_secs_f64()
+                );
+                break;
+            }
+            if passos > 400 {
+                println!(
+                    "DESISTIU em {total}/{alvo} apos {passos} passos ({:.1}s)",
+                    t0.elapsed().as_secs_f64()
+                );
+                break;
+            }
+            passos += 1;
+            if total == ultimo_total {
+                repeticoes += 1;
+                if repeticoes % 20 == 0 {
+                    println!("  preso em {total}/{alvo} ha {repeticoes} passos");
+                }
+            } else {
+                ultimo_total = total;
+                repeticoes = 0;
+            }
+            let t = std::time::Instant::now();
+            match cn.improve_centers(&cs, total) {
+                Some(seq) => {
+                    if t.elapsed().as_secs_f64() > 1.0 {
+                        println!("  {total}/{alvo}: {} mov em {:.1}s", seq.len(), t.elapsed().as_secs_f64());
+                    }
+                    for m in seq {
+                        cn.apply(&mut state, m);
+                    }
+                }
+                None => {
+                    travas += 1;
+                    println!(
+                        "  SEM SAIDA em {total}/{alvo} ({:.1}s nesta busca)",
+                        t.elapsed().as_secs_f64()
+                    );
+                    let ch = cn.plateau_shuffle(&cs, total, travas, &[]);
+                    for m in ch {
+                        cn.apply(&mut state, m);
+                    }
+                }
             }
         }
     }

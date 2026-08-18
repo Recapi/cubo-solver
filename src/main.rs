@@ -1867,24 +1867,38 @@ mod tests {
     /// Resolve de verdade os tres tamanhos novos. Na suite padrao vai um cubo
     /// por tamanho (o custo e de minutos); `cubon_reducao_exaustivo` roda mais
     /// casos e fica fora do padrao.
+    ///
+    /// SEMENTE FIXA de proposito: com embaralhamento sorteado o mesmo teste ia
+    /// de 40s a 9 minutos conforme o cubo que saia, e o tempo da suite virava
+    /// loteria. O sorteio fica com o exaustivo, que roda sob demanda.
     #[test]
     fn cubon_reducao_resolve() {
-        cubon_reducao_casos(1);
+        cubon_reducao_casos(1, Some(7000));
     }
 
     #[test]
-    #[ignore = "pesado: varios cubos por tamanho"]
+    #[ignore = "pesado: varios cubos aleatorios por tamanho"]
     fn cubon_reducao_exaustivo() {
-        cubon_reducao_casos(3);
+        cubon_reducao_casos(3, None);
     }
 
-    fn cubon_reducao_casos(casos: usize) {
+    fn cubon_reducao_casos(casos: usize, semente: Option<u64>) {
         let tables = tabelas();
         let mut rng = Rng::new();
+        let mut fixa = semente.unwrap_or(0);
         for n in [5usize, 6, 7] {
             let mut total = 0usize;
             for i in 0..casos {
-                let (f, _) = cuben::scramble_n(n, |m| rng.below(m));
+                let (f, _) = if semente.is_some() {
+                    cuben::scramble_n(n, |m| {
+                        fixa = fixa
+                            .wrapping_mul(6364136223846793005)
+                            .wrapping_add(1442695040888963407);
+                        (fixa >> 33) % m
+                    })
+                } else {
+                    cuben::scramble_n(n, |m| rng.below(m))
+                };
                 println!("{n}x{n} caso {i}: resolvendo...");
                 let t0 = std::time::Instant::now();
                 let sol = cuben::solve_n(n, &f, &tables)
