@@ -663,6 +663,14 @@ pub fn solve_n_prog(
                             .filter(|&tt| cn.grouped(&cs2, oi, tt) && !before.contains(&tt))
                             .map(|tt| EDGE_NAMES_N[tt])
                             .collect();
+                        if dbg >= 1 {
+                            // tabulavel: quem produz os movimentos das asas
+                            eprintln!(
+                                "WGASTO step={step} mov={} pares=+{}",
+                                seq.len(),
+                                novos.len()
+                            );
+                        }
                         if let Some(st) = stages.last_mut() {
                             st.name = format!("Agrupar aresta {}", novos.join(" e "));
                             st.info =
@@ -3379,7 +3387,13 @@ impl CubeN {
             saida
         };
 
-        for &t in &soltos {
+        // Pool de candidatos ACEITOS atraves de todos os alvos, com teto — a
+        // mesma receita medida nos centros. Antes, o primeiro (origem, destino)
+        // que aceitava ganhava, e a media ficava em 1.19 pares por chamada
+        // (WGASTO: 19.2 mov/par, 100% desta funcao); comparar alvos diferentes
+        // e o que deixa a cadeia (2 pares num ciclo) ser escolhida.
+        let mut pool: Vec<(usize, usize, usize, Vec<usize>)> = Vec::new();
+        'alvos: for &t in &soltos {
             let (a, b) = self.wing_positions(cs, oi, t);
             if a == usize::MAX || b == usize::MAX {
                 continue;
@@ -3411,26 +3425,28 @@ impl CubeN {
                             // que o mapa 3x3 le as arestas
                             c > count && (!exigir_par || c < 12 || self.invertidos(s, 0) % 2 == 0)
                         };
-                        // Entre os ciclos aceitos, fica o que mais avanca o
-                        // conjunto (pares, depois asas na casa certa, depois o
-                        // mais curto) — nao o primeiro que aparecer.
+                        // Todo ciclo aceito entra no pool com sua pontuacao
+                        // (pares, asas na casa certa, mais curto); a escolha e
+                        // feita uma vez, sobre alvos DIFERENTES.
                         let candidatos = tenta_um(cs, origem, da);
-                        let mut melhor1: Option<(usize, usize, usize, Vec<usize>)> = None;
+                        let mut algum = false;
                         for seq in &candidatos {
                             let s1 = aplicar(cs, seq);
                             if aceita(&s1) {
-                                let sc = (
+                                algum = true;
+                                pool.push((
                                     self.grouped_count(&s1, oi),
                                     certas(&s1),
                                     usize::MAX - seq.len(),
-                                );
-                                if melhor1.as_ref().is_none_or(|m| (m.0, m.1, m.2) < sc) {
-                                    melhor1 = Some((sc.0, sc.1, sc.2, seq.clone()));
+                                    seq.clone(),
+                                ));
+                                if pool.len() >= 16 {
+                                    break 'alvos;
                                 }
                             }
                         }
-                        if let Some((_, _, _, seq)) = melhor1 {
-                            return Some(seq);
+                        if algum {
+                            continue;
                         }
                         for seq in &candidatos {
                             let s1 = aplicar(cs, seq);
@@ -3445,7 +3461,15 @@ impl CubeN {
                                 if aceita(&s2) {
                                     let mut junta = seq.clone();
                                     junta.extend(seq2);
-                                    return Some(junta);
+                                    pool.push((
+                                        self.grouped_count(&s2, oi),
+                                        certas(&s2),
+                                        usize::MAX - junta.len(),
+                                        junta,
+                                    ));
+                                    if pool.len() >= 16 {
+                                        break 'alvos;
+                                    }
                                 }
                             }
                         }
@@ -3454,7 +3478,7 @@ impl CubeN {
                 }
             }
         }
-        None
+        pool.into_iter().max_by_key(|c| (c.0, c.1, c.2)).map(|c| c.3)
     }
 
     /// Passo CONSTRUTIVO dos centros: acha tres casas erradas em cadeia e as
