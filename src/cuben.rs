@@ -2852,6 +2852,12 @@ impl CubeN {
                 }
                 let oi = mexidas.iter().position(|&x| x == 3).unwrap();
                 let mut g = res.lock().unwrap();
+                // TENTADO E MEDIDO: guardar o mais curto em vez do primeiro
+                // (regua: 5x5 301 -> 329, 6x6 582 -> 581, 7x7 928 -> 915;
+                // soma 1811 -> 1825). Com a arvore multi-raiz, |B| e |V| se
+                // COMPENSAM: a orbita 1 do 5x5 trocou |B|=10/|V|=2.2 por
+                // |B|=8/|V|=3.1 — ciclo tipico identico. Cacar base curta
+                // neste espaco nao rende; fica o primeiro, que e estavel.
                 if g[oi].is_none() {
                     g[oi] = Some(seq);
                 }
@@ -3155,6 +3161,7 @@ impl CubeN {
                 seq.extend(invw(b));
                 if let Some((oi, 3)) = suporte(&s, &seq) {
                     let mut g = res.lock().unwrap();
+                    // o primeiro, nao o mais curto — ver a medicao nos centros
                     if g[oi].is_none() {
                         g[oi] = Some(seq);
                     }
