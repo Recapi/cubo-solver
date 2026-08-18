@@ -704,19 +704,22 @@ pub fn solve_n_prog(
                 }
             }
         }
-        let mut limpo: Vec<(usize, usize)> = Vec::with_capacity(planos.len());
-        for (m, si) in planos {
-            match limpo.last() {
-                Some(&(ant, _)) if ant / 3 == m / 3 => {
-                    let pot = (ant % 3 + 1 + m % 3 + 1) % 4; // 1,2,3 quartos
-                    limpo.pop();
-                    if pot != 0 {
-                        limpo.push(((m / 3) * 3 + pot - 1, si));
-                    }
-                }
-                _ => limpo.push((m, si)),
-            }
-        }
+        // Junta o que e da mesma camada e reordena o que comuta (mesmo eixo):
+        // sem reordenar, `R L R'` ficava como estava.
+        let so_movs: Vec<usize> = planos.iter().map(|&(m, _)| m).collect();
+        let etapa_de: Vec<usize> = planos.iter().map(|&(_, s)| s).collect();
+        let depths = cn.depths;
+        let enxuto = crate::simplify::simplify(
+            &so_movs,
+            |m| m / 3,
+            |m| (m / 3 / depths) % 3,
+            |c, p| c * 3 + p,
+        );
+        let limpo: Vec<(usize, usize)> = enxuto
+            .iter()
+            .enumerate()
+            .map(|(i, &m)| (m, *etapa_de.get(i).unwrap_or(&0)))
+            .collect();
         if limpo.len() < states.len() - 1 {
             let nomes: Vec<(String, String)> =
                 stages.iter().map(|s| (s.name.clone(), s.info.clone())).collect();

@@ -4,6 +4,7 @@ mod cube;
 mod cube2;
 mod cube4;
 mod cuben;
+mod simplify;
 mod facelet;
 mod optimal;
 mod partial;

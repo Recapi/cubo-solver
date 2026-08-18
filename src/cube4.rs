@@ -1366,6 +1366,56 @@ pub fn solve4(input: &str, t: &Tables) -> Result<Solve4, String> {
     if state != solved4() {
         return Err("erro interno: o 4x4 nao fechou".into());
     }
+
+    // ---- limpeza final ---------------------------------------------------
+    // As etapas sao resolvidas uma a uma, entao sobram redundancias na emenda
+    // (`U U` em vez de `U2`, `R L R'` em vez de `L`). So aceitamos o resultado
+    // se ele continuar resolvendo o cubo.
+    {
+        let mut planos: Vec<(usize, usize)> = Vec::new();
+        for (si, st) in stages.iter().enumerate() {
+            for tk in &st.tokens {
+                if let Ok(ms) = parse_moves4(tk) {
+                    for m in ms {
+                        planos.push((m, si));
+                    }
+                }
+            }
+        }
+        let camada = |m: usize| if m < 18 { m / 3 } else { 6 + (m - 18) / 3 };
+        let eixo = |m: usize| (if m < 18 { m / 3 } else { (m - 18) / 3 }) % 3;
+        let monta = |c: usize, p: usize| if c < 6 { c * 3 + p } else { 18 + (c - 6) * 3 + p };
+        let so_movs: Vec<usize> = planos.iter().map(|&(m, _)| m).collect();
+        let limpo = crate::simplify::simplify(&so_movs, camada, eixo, monta);
+        if limpo.len() < so_movs.len() {
+            // reconstroi etapas e estados com a lista enxuta
+            let etapa_de = |i: usize| planos.get(i).map(|&(_, s)| s).unwrap_or(0);
+            let nomes: Vec<(String, String)> =
+                stages.iter().map(|s| (s.name.clone(), s.info.clone())).collect();
+            let (mut novo, _) = parse4(input)?;
+            let mut novos: Vec<Stage4> = Vec::new();
+            let mut novos_estados = vec![render4(&novo, &letters)];
+            for (i, &m) in limpo.iter().enumerate() {
+                apply_move4(&mut novo, m);
+                novos_estados.push(render4(&novo, &letters));
+                let si = etapa_de(i.min(planos.len().saturating_sub(1)));
+                let nome = nomes.get(si).map(|x| x.0.clone()).unwrap_or_default();
+                match novos.last_mut() {
+                    Some(u) if u.name == nome => u.tokens.push(move_name4(m)),
+                    _ => novos.push(Stage4 {
+                        name: nome,
+                        info: nomes.get(si).map(|x| x.1.clone()).unwrap_or_default(),
+                        tokens: vec![move_name4(m)],
+                    }),
+                }
+            }
+            if novo == solved4() {
+                stages = novos;
+                states = novos_estados;
+            }
+        }
+    }
+
     let length = stages.iter().map(|s| s.tokens.len()).sum();
     Ok(Solve4 { stages, states, length })
 }

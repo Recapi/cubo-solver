@@ -516,6 +516,49 @@ pub fn solve_cfop(
     if !c.is_solved() {
         return Err("erro interno: o CFOP nao fechou o cubo".into());
     }
+
+    // Limpeza final: as etapas sao resolvidas em sequencia, entao sobra
+    // redundancia nas emendas (a cruz termina com U e o F2L comeca com U).
+    // So aceitamos se continuar resolvendo.
+    {
+        let planos: Vec<(u8, usize)> = stages
+            .iter()
+            .enumerate()
+            .flat_map(|(si, s)| s.moves.iter().map(move |&m| (m, si)))
+            .collect();
+        let so_movs: Vec<usize> = planos.iter().map(|&(m, _)| m as usize).collect();
+        let limpo = crate::simplify::simplify(
+            &so_movs,
+            |m| m / 3,          // camada = face (o 3x3 so tem giros externos)
+            |m| (m / 3) % 3,    // eixo: U/D, R/L, F/B
+            |c, p| c * 3 + p,
+        );
+        if limpo.len() < so_movs.len() {
+            let mut prova = start;
+            for &m in &limpo {
+                prova = prova.multiply(&t.mc[m]);
+            }
+            if prova.is_solved() {
+                let nomes: Vec<(String, String)> =
+                    stages.iter().map(|s| (s.name.clone(), s.info.clone())).collect();
+                let mut novas: Vec<CfopStage> = Vec::new();
+                for (i, &m) in limpo.iter().enumerate() {
+                    let si = planos.get(i).map(|&(_, s)| s).unwrap_or(0);
+                    let nome = nomes.get(si).map(|x| x.0.clone()).unwrap_or_default();
+                    match novas.last_mut() {
+                        Some(u) if u.name == nome => u.moves.push(m as u8),
+                        _ => novas.push(CfopStage {
+                            name: nome,
+                            info: nomes.get(si).map(|x| x.1.clone()).unwrap_or_default(),
+                            moves: vec![m as u8],
+                        }),
+                    }
+                }
+                stages = novas;
+            }
+        }
+    }
+
     let total = stages.iter().map(|s| s.moves.len()).sum();
     Ok(CfopSolution { start_facelets: to_facelets(&start), stages, total })
 }
