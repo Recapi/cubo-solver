@@ -3292,12 +3292,63 @@ impl CubeN {
             }
             o
         };
+        // Referencia de cada casa (quando existe): nos impares, a aresta do
+        // meio; nos pares com orbita > 0, o par ja formado da orbita 0. Na
+        // orbita 0 dos pares nao ha referencia e a conta fica so nos pares.
+        let ref_da_casa = |s: &SN, j: usize| -> Option<u8> {
+            if self.midge_facelets.is_some() {
+                Some(s.mt[j])
+            } else if oi > 0 {
+                (s.wt[2 * j] == s.wt[2 * j + 1]).then(|| s.wt[2 * j])
+            } else {
+                None
+            }
+        };
+        // Asas ja na casa certa: e o que um ciclo em CADEIA melhora alem do
+        // par fechado — a segunda asa movida tambem chega em casa.
+        let certas = |s: &SN| -> usize {
+            let mut c = 0;
+            for j in 0..12 {
+                if let Some(t) = ref_da_casa(s, j) {
+                    for q in [2 * j, 2 * j + 1] {
+                        if s.wt[oi * 24 + q] == t {
+                            c += 1;
+                        }
+                    }
+                }
+            }
+            c
+        };
         // um 3-ciclo por vez nao fecha um par (sao DUAS asas): tenta um e,
-        // se preciso, um segundo em cima dele
+        // se preciso, um segundo em cima dele.
+        //
+        // O terceiro vertice `x` do trio recebe o conteudo que estava em
+        // `destino` — entao a casa-LAR desse conteudo vem primeiro na fila: se
+        // servir, o mesmo ciclo arruma DUAS asas (a cadeia dos centros,
+        // aplicada as asas). Motivo: o raio-X mostrou as arestas dominando o
+        // comprimento nos tres tamanhos (54 a 73%), a ~30 movimentos por
+        // aresta, e cada 3-ciclo destes custa 8 a 16.
         let tenta_um = |base: &SN, origem: usize, destino: usize| -> Vec<Vec<usize>> {
+            let desloc = base.wt[oi * 24 + destino];
+            let mut fila: Vec<usize> = Vec::new();
+            for j in 0..12 {
+                if ref_da_casa(base, j) == Some(desloc) {
+                    for q in [2 * j, 2 * j + 1] {
+                        if livres.contains(&q) && base.wt[oi * 24 + q] != desloc {
+                            fila.push(q);
+                        }
+                    }
+                }
+            }
+            let resto: Vec<usize> =
+                livres.iter().copied().filter(|q| !fila.contains(q)).collect();
+            fila.extend(resto);
+            fila.push(0);
             let mut saida = Vec::new();
-            for &x in livres.iter().chain([0usize].iter()) {
-                let x = if x == origem || x == destino { continue } else { x };
+            for &x in &fila {
+                if x == origem || x == destino {
+                    continue;
+                }
                 for trio in [
                     [origem as u8, destino as u8, x as u8],
                     [origem as u8, x as u8, destino as u8],
@@ -3347,12 +3398,30 @@ impl CubeN {
                             // que o mapa 3x3 le as arestas
                             c > count && (!exigir_par || c < 12 || self.invertidos(s, 0) % 2 == 0)
                         };
-                        for seq in tenta_um(cs, origem, da) {
-                            let s1 = aplicar(cs, &seq);
+                        // Entre os ciclos aceitos, fica o que mais avanca o
+                        // conjunto (pares, depois asas na casa certa, depois o
+                        // mais curto) — nao o primeiro que aparecer.
+                        let candidatos = tenta_um(cs, origem, da);
+                        let mut melhor1: Option<(usize, usize, usize, Vec<usize>)> = None;
+                        for seq in &candidatos {
+                            let s1 = aplicar(cs, seq);
                             if aceita(&s1) {
-                                return Some(seq);
+                                let sc = (
+                                    self.grouped_count(&s1, oi),
+                                    certas(&s1),
+                                    usize::MAX - seq.len(),
+                                );
+                                if melhor1.as_ref().is_none_or(|m| (m.0, m.1, m.2) < sc) {
+                                    melhor1 = Some((sc.0, sc.1, sc.2, seq.clone()));
+                                }
                             }
-                            // senao, um segundo 3-ciclo para a parceira
+                        }
+                        if let Some((_, _, _, seq)) = melhor1 {
+                            return Some(seq);
+                        }
+                        for seq in &candidatos {
+                            let s1 = aplicar(cs, seq);
+                            // um segundo 3-ciclo para a parceira
                             let (p1, p2) = self.wing_positions(&s1, oi, t);
                             let resto = if p1 == da { p2 } else { p1 };
                             if resto == usize::MAX || resto == db {
@@ -4173,6 +4242,55 @@ mod tests {
             }
         }
         println!("\nTOTAL 6x6: {total:.1}s, {movs} movimentos");
+    }
+
+    /// Raio-X do COMPRIMENTO: para onde vao os movimentos, por fase, nos tres
+    /// tamanhos. E o mapa para encurtar a solucao (hoje ~900 no 6x6 e ~1250 no
+    /// 7x7 contra ~200 de um humano): so vale atacar a fase que domina.
+    #[test]
+    #[ignore = "diagnóstico: movimentos por fase"]
+    fn raio_x_do_comprimento() {
+        let tables = Tables::build();
+        for n in [5usize, 6, 7] {
+            let cn = cuben(n);
+            // soma por categoria em 3 casos fixos
+            let mut cat: Vec<(&str, usize)> =
+                vec![("centros", 0), ("arestas", 0), ("paridade", 0), ("3x3", 0)];
+            let mut total = 0usize;
+            let mut arestas_feitas = 0usize;
+            for caso in 0..3 {
+                let st = lcg_scramble(&cn, 1000 + (n * 10 + caso) as u64, n * 10);
+                let entrada = cn.render(&st, &['U', 'R', 'F', 'D', 'L', 'B']);
+                let sol = solve_n(n, &entrada, &tables).expect("resolver");
+                total += sol.length;
+                for s in &sol.stages {
+                    let idx = if s.name.starts_with("Montar") {
+                        0
+                    } else if s.name.starts_with("Agrupar") {
+                        arestas_feitas += 1;
+                        1
+                    } else if s.name.contains("aridade") {
+                        2
+                    } else {
+                        3
+                    };
+                    cat[idx].1 += s.tokens.len();
+                }
+            }
+            println!("\n{n}x{n} — {total} movimentos em 3 casos ({} por cubo):", total / 3);
+            for (nome, q) in &cat {
+                println!(
+                    "  {q:5} ({:4.1}%) — {nome}",
+                    100.0 * *q as f64 / total as f64
+                );
+            }
+            if arestas_feitas > 0 {
+                println!(
+                    "  custo por aresta agrupada: {:.1} movimentos",
+                    cat[1].1 as f64 / arestas_feitas as f64
+                );
+            }
+        }
     }
 
     /// O mesmo caso, mas pelo pipeline inteiro: mede quanto vai para centros,
