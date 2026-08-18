@@ -2689,6 +2689,18 @@ impl CubeN {
         let goal = |s: &SN| self.center_total(s) > total;
         let h = |_: &SN| 0u8; // qualquer movimento pode melhorar: sem cota util
         let bs = self.wing_bs(false);
+        // TENTADO E REVERTIDO — o lote (fatia + giros externos + desfaz, ganhando
+        // TRES centros de uma vez) e o metodo humano e rendeu nas ASAS, mas aqui
+        // nao paga. Ele e otimo por peca (1.2-1.3 mov/peca contra 5.8-6.4 do
+        // 3-ciclo) e mesmo assim o cubo inteiro piora, nas tres calibragens
+        // medidas no caso fixo do 7x7 (baseline 923 movimentos / 3.8s):
+        //   - antes dos degraus baratos: 877 / 8.8s
+        //   - depois do macro12: nunca dispara (o macro12 pega esses casos)
+        //   - so na fase rica (>= 25% faltando): 883 / 14.1s
+        // A causa aparece na tabela: sempre que o lote dispara, o macro12 DOBRA
+        // de trabalho (28 -> 56 chamadas, 2.9 -> 5.2s). O lote leva as pecas
+        // faceis, que o macro12 pegaria barato, e deixa as dificeis — troca -4%
+        // de comprimento por +270% de tempo. Fica o registro para nao repetir.
         // do mais barato ao mais caro; nenhuma familia foi retirada, apenas
         // reordenada, e as varreduras instantaneas vem antes das genericas
         let t0 = std::time::Instant::now();
