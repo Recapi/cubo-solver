@@ -5344,6 +5344,227 @@ mod tests {
             100.0 * impares as f64 / orbitas as f64);
     }
 
+    /// Existe, para cada orbita, um 3-ciclo ESTRITAMENTE puro — que nao mexe em
+    /// canto, meio, asa, nucleo nem em outra orbita de centro?
+    ///
+    /// E o que o calendario exige. Ali as letras vao nos cantos, entao o 3x3
+    /// precisa ser resolvido ANTES (so ele usa giro externo); e dai em diante
+    /// nada pode mexer nele. Os ciclos de hoje nao servem: medido, o da orbita
+    /// 0 mexe em 7 adesivos de canto e 9 de asa. Eles bastam para o solver
+    /// normal, onde canto e asa vem depois — nao para este uso.
+    #[test]
+    #[ignore = "experimento: 3-ciclos estritamente puros (para o calendário)"]
+    fn ciclos_estritamente_puros() {
+        let cn = cuben(7);
+        let inv = |m: usize| (m / 3) * 3 + (2 - m % 3);
+        let n_fac = cn.n_facelets;
+        // permutacao de cada movimento, uma vez so: mov[m][i] = de onde vem o
+        // conteudo da casa i. Compor isso e barato; aplicar `apply` num laco de
+        // milhoes nao seria.
+        let movp: Vec<Vec<u16>> = (0..cn.n_moves)
+            .map(|m| {
+                let mut alto: Vec<u8> = (0..n_fac).map(|i| (i >> 8) as u8).collect();
+                let mut baixo: Vec<u8> = (0..n_fac).map(|i| (i & 255) as u8).collect();
+                cn.apply(&mut alto, m);
+                cn.apply(&mut baixo, m);
+                alto.iter().zip(baixo.iter()).map(|(&a, &b)| ((a as u16) << 8) | b as u16).collect()
+            })
+            .collect();
+        let compor = |seq: &[usize]| -> Vec<u16> {
+            let mut p: Vec<u16> = (0..n_fac as u16).collect();
+            for &m in seq {
+                let mv = &movp[m];
+                p = (0..n_fac).map(|i| p[mv[i] as usize]).collect();
+            }
+            p
+        };
+        // classifica os adesivos
+        let mut intocavel = vec![false; n_fac]; // canto e meio: nao podem se mexer
+        for c in cn.corner_facelets.iter() {
+            for &f in c.iter() { intocavel[f] = true; }
+        }
+        if let Some(mf) = &cn.midge_facelets {
+            for w in mf.iter() {
+                for &f in w.iter() { intocavel[f] = true; }
+            }
+        }
+        let mut orbita = vec![usize::MAX; n_fac];
+        for (oi, orb) in cn.center_orbits.iter().enumerate() {
+            for &f in orb.iter() { orbita[f] = oi; }
+        }
+        let mut e_asa = vec![false; n_fac];
+        for orb in cn.wing_orbits.iter() {
+            for w in orb.iter() {
+                for &f in w.iter() { e_asa[f] = true; }
+            }
+        }
+
+        // conferencia: o que os ciclos de hoje fazem
+        for (oi, b) in cn.base3.iter().enumerate() {
+            if let Some(seq) = b {
+                let p = compor(seq);
+                let mex: Vec<usize> = (0..n_fac).filter(|&i| p[i] != i as u16).collect();
+                let toca_canto = mex.iter().any(|&f| intocavel[f]);
+                println!("  centro {oi}: move {} adesivos, toca canto/meio: {toca_canto}", mex.len());
+            }
+        }
+
+        // Num comutador [A,B] = A B A' B', o efeito nos cantos e
+        // cantos(A)·cantos(B)·cantos(A)'·cantos(B)'. Se A nao mexe em canto,
+        // isso vira cantos(B)·cantos(B)' = identidade, QUALQUER que seja B.
+        // Entao basta o primeiro termo ser feito de fatias das camadas 1 e 2
+        // (num 7x7 o canto so existe na camada externa e o meio de aresta na
+        // camada 3); o segundo pode ser giro externo a vontade. E essa a
+        // construcao classica dos comutadores de centro em cubos grandes.
+        let todos = cn.atoms();
+        let atomos: Vec<Vec<usize>> = {
+            let mut v = Vec::new();
+            for f in 0..6 {
+                for d in 1..3usize {
+                    for pw in 0..3 {
+                        let largo = (f * cn.depths + d) * 3 + pw;
+                        let anterior = (f * cn.depths + d - 1) * 3;
+                        v.push(vec![largo, inv(anterior + pw)]);
+                    }
+                }
+            }
+            v
+        };
+        println!("
+{} atomos de fatia (camadas 1 e 2)", atomos.len());
+        let mut nivel2: Vec<Vec<usize>> = Vec::new();
+        for a in &atomos {
+            for b in &atomos {
+                if a.first().is_some_and(|&l| b.first().is_some_and(|&f| l / 3 == f / 3)) { continue; }
+                let mut w = a.clone();
+                w.extend(b.iter().copied());
+                nivel2.push(w);
+            }
+        }
+        let mut nivel3: Vec<Vec<usize>> = Vec::new();
+        for a in &atomos {
+            for w2 in &nivel2 {
+                if a.first().is_some_and(|&l| w2.first().is_some_and(|&f| l / 3 == f / 3)) { continue; }
+                let mut w = a.clone();
+                w.extend(w2.iter().copied());
+                nivel3.push(w);
+            }
+        }
+        // Criterio: nao mexe em canto nem meio, mexe em 3 casas de UMA orbita de
+        // centro, e nao mexe em outra orbita. Asa pode: ela vem depois.
+        let mut achados: Vec<Option<Vec<usize>>> = vec![None; cn.center_orbits.len()];
+        let mut testadas = 0usize;
+        'busca: for w in atomos.iter().chain(nivel2.iter()).chain(nivel3.iter()) {
+            let wi: Vec<usize> = w.iter().rev().map(|&m| inv(m)).collect();
+            for b in &todos {
+                let bi: Vec<usize> = b.iter().rev().map(|&m| inv(m)).collect();
+                let mut seq = w.clone();
+                seq.extend(b.iter().copied());
+                seq.extend(wi.iter().copied());
+                seq.extend(bi.iter().copied());
+                testadas += 1;
+                let p = compor(&seq);
+                let mut alvo = usize::MAX;
+                let mut n_centro = 0;
+                let mut ok = true;
+                for i in 0..n_fac {
+                    if p[i] == i as u16 { continue; }
+                    if intocavel[i] { ok = false; break; }
+                    if e_asa[i] { continue; }
+                    let oi = orbita[i];
+                    if oi == usize::MAX { ok = false; break; }
+                    if alvo == usize::MAX { alvo = oi; }
+                    else if alvo != oi { ok = false; break; }
+                    n_centro += 1;
+                }
+                if ok && n_centro == 3 && alvo != usize::MAX && achados[alvo].is_none() {
+                    println!("  ACHOU centro {alvo}: {} movimentos", seq.len());
+                    achados[alvo] = Some(seq);
+                    if achados.iter().all(|a| a.is_some()) { break 'busca; }
+                }
+            }
+        }
+        println!("
+{testadas} comutadores testados");
+        for (oi, a) in achados.iter().enumerate() {
+            match a {
+                Some(seq) => println!("  centro {oi}: OK ({} movimentos)", seq.len()),
+                None => println!("  centro {oi}: nao achou"),
+            }
+        }
+    }
+
+    /// Ate que ponto os nossos 3-ciclos sao puros? Para o calendario isso decide
+    /// a ORDEM das fases: se um ciclo de centro mexe em canto ou meio, nao da
+    /// para resolver o 3x3 antes; se mexe em asa, os centros tem de vir antes
+    /// das asas. Mede aplicando cada ciclo-base ao cubo resolvido e olhando
+    /// QUAIS adesivos mudaram.
+    #[test]
+    #[ignore = "diagnóstico: pureza dos 3-ciclos por tipo de peça"]
+    fn pureza_dos_ciclos() {
+        for n in [7usize] {
+            let cn = cuben(n);
+            let por_face = n * n;
+            let base = cn.solved();
+            // classifica cada adesivo: canto, meio de aresta, asa ou centro
+            let mut tipo = vec!["centro"; cn.n_facelets];
+            for c in cn.corner_facelets.iter() {
+                for &f in c.iter() {
+                    tipo[f] = "canto";
+                }
+            }
+            if let Some(mf) = &cn.midge_facelets {
+                for w in mf.iter() {
+                    for &f in w.iter() {
+                        tipo[f] = "meio";
+                    }
+                }
+            }
+            for orb in cn.wing_orbits.iter() {
+                for w in orb.iter() {
+                    for &f in w.iter() {
+                        tipo[f] = "asa";
+                    }
+                }
+            }
+            if n % 2 == 1 {
+                let m = (n - 1) / 2;
+                for f in 0..6 {
+                    tipo[f * por_face + m * n + m] = "nucleo";
+                }
+            }
+            let conta = |seq: &[usize], nome: &str| {
+                let mut st = base.clone();
+                for &m in seq {
+                    cn.apply(&mut st, m);
+                }
+                let mut por_tipo: Vec<(&str, usize)> = Vec::new();
+                for i in 0..cn.n_facelets {
+                    if st[i] != base[i] {
+                        match por_tipo.iter_mut().find(|(t, _)| *t == tipo[i]) {
+                            Some((_, q)) => *q += 1,
+                            None => por_tipo.push((tipo[i], 1)),
+                        }
+                    }
+                }
+                // adesivo com a mesma cor nao acusa: conta tambem a PERMUTACAO
+                println!("  {nome}: {} movimentos, adesivos mudados {por_tipo:?}", seq.len());
+            };
+            println!("N={n} — ciclos de CENTRO:");
+            for (oi, b) in cn.base3.iter().enumerate() {
+                if let Some(seq) = b {
+                    conta(seq, &format!("orbita {oi}"));
+                }
+            }
+            println!("N={n} — ciclos de ASA:");
+            for (oi, b) in cn.wbase3.iter().enumerate() {
+                if let Some(seq) = b {
+                    conta(seq, &format!("orbita {oi}"));
+                }
+            }
+        }
+    }
+
     /// ALVO PARCIAL: o calendario precisa de UMA face correta, nao do cubo
     /// inteiro — e o proprio tutorial da tribox resolve assim, em dez passos por
     /// tiras. Este teste mede o que isso muda.
