@@ -213,6 +213,146 @@ impl EstadoCal {
     }
 }
 
+/// A primeira face lida das fotos e CONFERIDA contra o cubo fisico, em duas
+/// passadas: primeiro simbolo e cor, depois a rotacao. So os simbolos e as
+/// cores estao validados aqui; as rotacoes ainda nao.
+///
+/// Tres casas foram corrigidas pela conferencia, e todas pelo mesmo motivo — eu
+/// lia o desenho girado como se estivesse em pe:
+///   (0,2) e a letra `l`, nao um `1`;
+///   (6,4) e (6,5) sao `a` e `n` (de "Jan"), nao `u` e `p` — que e como um `n`
+///   e um `a` de cabeca para baixo se parecem.
+pub const FACE_LIDA_1: &str = "    23(v)    .     'l    8(a)  16(a)  .     'Ma
+    @Sun(v)  @Mon  .     7     15     .     @Sat(a)
+    1(v)     2     3     4     5      6     12(v)
+    8(v)     9     10    11    12     13    5(v)
+    15(v)    16    17    18    19     20    .
+    29       22    23    24    25     .     .
+    24/31(v) .     .     .     'a     'n    .";
+
+/// Os CANTOS ditados com o cubo na mao. Cada canto e uma peca so, com tres
+/// adesivos — e e por eles que as seis faces se amarram: saber que `Ma`, `Ap` e
+/// `J` sao a MESMA peca ja diz que essas tres faces se encontram num vertice.
+/// Seis fotos soltas nao contam isso; os cantos contam.
+///
+/// Confirma tambem a economia do fabricante nos nomes de mes: `J` serve
+/// janeiro, junho e julho; `Ma` serve marco e maio; `Ap` e abril.
+/// Os oito, ditados com o cubo na mao. Duas coisas que eles ja provam:
+/// - a COR faz parte da identidade da peca — o canto 3 traz dois 29, um azul e
+///   um vermelho, e sao adesivos distintos;
+/// - o fabricante economiza nos nomes de mes: `J` serve janeiro, junho e julho,
+///   `Ma` serve marco e maio.
+pub const CANTOS: [[&str; 3]; 8] = [
+    ["Ap", "Ma", "J"],
+    ["De", "No", "."],
+    ["A", "Oc", "."],
+    ["29(a)", "29(v)", "28(v)"],
+    ["24(v)", "23(v)", "."],
+    ["25(v)", "26(v)", "27(v)"],
+    ["23/30(v)", "30(a)", "Fe"],
+    ["Se", "31(a)", "24/31(v)"],
+];
+
+/// Os quatro cantos de cada face, lidos das fotos, na ordem
+/// (0,0) (0,6) (6,0) (6,6). `.` e adesivo em branco — e e justamente onde a
+/// leitura sozinha nao decide qual peca esta ali.
+pub const CANTOS_DAS_FACES: [[&str; 4]; 6] = [
+    ["23(v)", "Ma", "24/31(v)", "."],      // a face quase montada
+    ["30(a)", ".", "29(a)", "31(a)"],
+    ["27(v)", "Fe", "Oc", "29(v)"],
+    ["Se", "De", "28(v)", "."],
+    ["23/30(v)", "26(v)", "24(v)", "Ap"],
+    ["J", "25(v)", "No", "A"],
+];
+
+/// Qual peca de canto esta em cada face, deduzido — nao ditado.
+///
+/// Tres faces mostram um canto em BRANCO, e tres pecas (as que tem um adesivo
+/// vazio) precisam de uma terceira face. Isso da seis atribuicoes possiveis, e
+/// so UMA sobrevive a regra que define um cubo: duas faces compartilham 0
+/// cantos (sao opostas) ou exatamente 2 (sao vizinhas). Nunca 1.
+///
+/// Foi assim que a estrutura saiu sem refotografar nada — os cantos ditados
+/// bastaram.
+pub fn deduzir_faces() -> Result<Vec<[usize; 4]>, String> {
+    // de cada face, as pecas que a leitura ja identifica (e as casas em branco)
+    let mut conhecidas: Vec<Vec<usize>> = Vec::new();
+    let mut vagas: Vec<usize> = Vec::new();
+    for (fi, face) in CANTOS_DAS_FACES.iter().enumerate() {
+        let mut pecas = Vec::new();
+        for adesivo in face.iter() {
+            if *adesivo == "." {
+                vagas.push(fi);
+                continue;
+            }
+            match CANTOS.iter().position(|p| p.contains(adesivo)) {
+                Some(i) => pecas.push(i),
+                None => return Err(format!("face {fi}: '{adesivo}' nao esta em nenhum canto")),
+            }
+        }
+        conhecidas.push(pecas);
+    }
+    // as pecas que ainda nao apareceram em tres faces
+    let faltando: Vec<usize> = (0..8)
+        .filter(|&p| conhecidas.iter().filter(|f| f.contains(&p)).count() < 3)
+        .collect();
+    if faltando.len() != vagas.len() {
+        return Err(format!(
+            "{} casas em branco para {} pecas incompletas",
+            vagas.len(),
+            faltando.len()
+        ));
+    }
+    // testa todas as atribuicoes; guarda as que formam um cubo de verdade
+    let mut boas: Vec<Vec<[usize; 4]>> = Vec::new();
+    let n = faltando.len();
+    let mut ordem: Vec<usize> = (0..n).collect();
+    permutacoes(&mut ordem, 0, &mut |perm: &[usize]| {
+        let mut faces = conhecidas.clone();
+        for (k, &fi) in vagas.iter().enumerate() {
+            faces[fi].push(faltando[perm[k]]);
+        }
+        // regra do cubo: 0 ou 2 cantos em comum, nunca 1 nem 3
+        for a in 0..6 {
+            for b in (a + 1)..6 {
+                let comuns = faces[a].iter().filter(|p| faces[b].contains(p)).count();
+                if comuns != 0 && comuns != 2 {
+                    return;
+                }
+            }
+        }
+        // e cada peca em exatamente tres faces
+        for p in 0..8 {
+            if faces.iter().filter(|f| f.contains(&p)).count() != 3 {
+                return;
+            }
+        }
+        boas.push(
+            faces
+                .iter()
+                .map(|f| [f[0], f[1], f[2], f[3]])
+                .collect(),
+        );
+    });
+    match boas.len() {
+        1 => Ok(boas.remove(0)),
+        0 => Err("nenhuma atribuicao forma um cubo — ha erro na leitura".into()),
+        n => Err(format!("{n} atribuicoes possiveis: falta informacao")),
+    }
+}
+
+fn permutacoes(v: &mut Vec<usize>, k: usize, f: &mut impl FnMut(&[usize])) {
+    if k == v.len() {
+        f(v);
+        return;
+    }
+    for i in k..v.len() {
+        v.swap(k, i);
+        permutacoes(v, k + 1, f);
+        v.swap(k, i);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +370,86 @@ mod tests {
     fn recusa_o_que_nao_entende() {
         for txt in ["17(x)", "'", "'ABCDE", "@Lun", "a/b", ">>>>", "17>>>>"] {
             assert!(ler_adesivo(txt).is_err(), "'{txt}' deveria ser recusado");
+        }
+    }
+
+    /// A face conferida com o cubo na mao tem de continuar sendo lida sem erro.
+    #[test]
+    fn le_a_face_conferida() {
+        let mut e = EstadoCal::vazio();
+        e.ler_face(0, FACE_LIDA_1).expect("a face conferida deve ser valida");
+        assert_eq!(e.casa(0, 1, 0).simbolo, Simbolo::Dia(0), "(1,0) e o cabecalho Sun");
+        assert_eq!(e.casa(0, 1, 0).cor, Cor::Vermelho, "domingo e vermelho");
+        assert_eq!(e.casa(0, 2, 0).simbolo, Simbolo::Data(1));
+        assert_eq!(e.casa(0, 6, 0).simbolo, Simbolo::Dupla(24, 31), "a casa dupla");
+        assert_eq!(e.casa(0, 0, 6).simbolo, Simbolo::Letra(Texto::novo("Ma").unwrap()),
+            "o canto traz DUAS letras");
+        assert_eq!(e.casa(0, 0, 2).simbolo, Simbolo::Letra(Texto::novo("l").unwrap()),
+            "(0,2) e a letra l, corrigida na conferencia");
+        // o que a foto mostrava como u e p sao a e n girados
+        assert_eq!(e.casa(0, 6, 4).simbolo, Simbolo::Letra(Texto::novo("a").unwrap()));
+        assert_eq!(e.casa(0, 6, 5).simbolo, Simbolo::Letra(Texto::novo("n").unwrap()));
+        // e um retrato do calendario: as datas 1 a 6 em sequencia na linha 2
+        for (c, d) in (1..=6u8).enumerate() {
+            assert_eq!(e.casa(0, 2, c).simbolo, Simbolo::Data(d));
+        }
+    }
+
+    /// Os cantos ditados tem de ser legiveis pelo mesmo formato das faces — e
+    /// cada um tem exatamente tres adesivos, que e o que define um canto.
+    #[test]
+    fn le_os_cantos_ditados() {
+        for canto in CANTOS.iter() {
+            assert_eq!(canto.len(), 3, "canto tem tres adesivos");
+            for txt in canto.iter() {
+                let t = if txt.chars().next().is_some_and(|c| c.is_ascii_alphabetic()) {
+                    format!("'{txt}")
+                } else {
+                    txt.to_string()
+                };
+                ler_adesivo(&t).unwrap_or_else(|e| panic!("canto {canto:?}: {e}"));
+            }
+        }
+        assert_eq!(CANTOS.len(), 8, "um cubo tem oito cantos");
+        // Os cantos da face ja conferida tem de existir entre as pecas ditadas.
+        // E a primeira checagem cruzada entre o que eu li da foto e o que voce
+        // ditou do cubo — se um nao existisse, um dos dois estaria errado.
+        let mut e = EstadoCal::vazio();
+        e.ler_face(0, FACE_LIDA_1).unwrap();
+        for (l, c) in [(0, 0), (0, 6), (6, 0), (6, 6)] {
+            let mostra = e.casa(0, l, c).to_string();
+            let mostra = mostra.trim_start_matches('\'');
+            let achou = CANTOS.iter().any(|p| p.iter().any(|a| *a == mostra));
+            assert!(achou, "canto ({l},{c}) mostra '{mostra}', que nao esta em nenhuma peca");
+        }
+    }
+
+    /// A estrutura do cubo sai dos cantos, sem refotografar: a atribuicao das
+    /// tres casas em branco tem de ser UNICA. Se este teste passar a acusar
+    /// varias solucoes, e sinal de que uma leitura mudou e virou ambigua.
+    #[test]
+    fn a_estrutura_sai_dos_cantos() {
+        let faces = deduzir_faces().unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(faces.len(), 6);
+        // cada peca em exatamente tres faces
+        for p in 0..8 {
+            let quantas = faces.iter().filter(|f| f.contains(&p)).count();
+            assert_eq!(quantas, 3, "peca {p} em {quantas} faces");
+        }
+        // tres pares de faces opostas (zero cantos em comum)
+        let mut opostas = 0;
+        for a in 0..6 {
+            for b in (a + 1)..6 {
+                let comuns = faces[a].iter().filter(|p| faces[b].contains(p)).count();
+                assert!(comuns == 0 || comuns == 2, "faces {a} e {b} tem {comuns} cantos em comum");
+                if comuns == 0 {
+                    opostas += 1;
+                }
+            }
+        }
+        assert_eq!(opostas, 3, "um cubo tem tres pares de faces opostas");
+        for (i, f) in faces.iter().enumerate() {
+            println!("face {i}: cantos {f:?}");
         }
     }
 
