@@ -230,6 +230,98 @@ pub const FACE_LIDA_1: &str = "    23(v)    .     'l    8(a)  16(a)  .     'Ma
     29       22    23    24    25     .     .
     24/31(v) .     .     .     'a     'n    .";
 
+/// Face 2, lida e conferida. Nenhuma correcao desta vez — as duvidas que
+/// levantei (dois 29 pretos vizinhos, e um 17 girado) estavam certas. Numeros
+/// repetidos lado a lado sao onde a leitura mais escorrega, entao vale sempre
+/// perguntar.
+pub const FACE_LIDA_2: &str = "    30(a) 21(v) 9(a) 13(a) 15(a) 25    .
+    24    18    5    .     .     .     .
+    .     19    4    2     3     4     27
+    2(v)  20    3    5     10    11    7(v)
+    28    21    2    16    17    18    .
+    19(v) .     22   8     1     17    26
+    29(a) 27    26   29    29    16(v) 31(a)";
+
+/// Face 3, lida e conferida. Duas correcoes, e a primeira e a lição do cubo:
+/// eu li `9` onde havia `6`. E exatamente o truque em que o produto se apoia —
+/// a fonte foi desenhada para que um 6 de cabeca para baixo VIRE um 9, e e isso
+/// que permite seis centros cobrirem sete arranjos de mes. Quem le, cai.
+///
+/// A outra: `(6,5)` e a letra `t`, que fecha "Oct" com o `Oc` do canto — eu
+/// tinha lido como o numero 4 girado.
+pub const FACE_LIDA_3: &str = "    27(v) 17(v) 14(v) 27  20(a) 27(a) 'Fe
+    25(a) 24    23    22  21    20    .
+    18(a) 17    16    15  14    13    .
+    11(a) 10    6     8   7     3     .
+    2(a)  3     2     1   .     .     31
+    22(v) 23    24    25  26    27    26(a)
+    'Oc   .     .     30  13(v) 't    29(v)";
+
+/// Face 4, lida e conferida. Sem correcoes.
+///
+/// Ela estabelece um fato que importa para o alvo: existem DUAS pecas `24/31`,
+/// uma vermelha (a de canto, peca 8) e uma preta (aqui em (5,6)). Faz sentido —
+/// a vermelha serve a coluna de domingo e a preta as outras. Mais uma prova de
+/// que a cor faz parte da identidade da peca, nao e enfeite.
+pub const FACE_LIDA_4: &str = "    'Se   'y  .   .   .   .   'De
+    23(a) 21  14  7   .   .   31
+    .     .   1   8   15  .   4(a)
+    28    8   4   10  11  .   7(v)
+    9(v)  15  16  17  18  .   28
+    30    .   .   5   12  19  24/31
+    28(v) .   30  31  30  'n  .";
+
+/// Face 5, lida e conferida. Sem correcoes — inclusive o `6` azul de (3,6), que
+/// eu marquei como duvida por ja ter caido no truque do 6/9 na face 3.
+///
+/// Ela carrega quatro dos sete cabecalhos de dia da semana numa coluna so
+/// (`Tue` a `Fri`); os outros tres estao na face 1.
+pub const FACE_LIDA_5: &str = "    23/30(v) 20(v) 5(a) 26 25 24(a) 26(v)
+    28(a)    25    24   23 1  22    'b
+    21(a)    14    13   12 11 @Tue  'g
+    14(a)    4     5    6  7  @Wed  6(a)
+    7(a)     10    1    8  15 @Thu  27
+    28       23    16   9  2  @Fri  .
+    24(v)    29    .    .  1(a) 'r  'Ap";
+
+/// Face 6, lida e conferida. Sem correcoes.
+pub const FACE_LIDA_6: &str = "    'J    'c  10(v) 10(a) .     30    25(v)
+    .     .   11    21    20    21    18(v)
+    29    .   12    14    13    20    3(a)
+    6(v)  .   13    7     6     19    12(a)
+    31    .   14    .     .     18    17(a)
+    'v    26  19    12    22    .     22(a)
+    'No   28  19(a) 3(v)  11(v) 'p    'A";
+
+/// As seis faces, na ordem em que foram lidas e conferidas.
+pub const FACES_LIDAS: [&str; 6] = [
+    FACE_LIDA_1,
+    FACE_LIDA_2,
+    FACE_LIDA_3,
+    FACE_LIDA_4,
+    FACE_LIDA_5,
+    FACE_LIDA_6,
+];
+
+/// O 6 e o 9 sao a MESMA peca.
+///
+/// Nao e coincidencia nem economia: a fonte foi desenhada para que o 6 de
+/// cabeca para baixo vire um 9, e e isso que permite seis centros cobrirem os
+/// sete arranjos de mes possiveis. Sem esse truque o cubo nao existiria.
+///
+/// Para o solver, a consequencia e direta: quem precisa de um 9 pode usar um 6
+/// girado, e vice-versa. Tratar os dois como pecas distintas tornaria alvos
+/// perfeitamente montaveis em impossiveis.
+///
+/// (Foi tambem onde eu mais errei lendo as fotos — duas vezes.)
+pub fn mesmo_desenho(a: &Simbolo, b: &Simbolo) -> bool {
+    let normal = |s: &Simbolo| match s {
+        Simbolo::Data(9) => Simbolo::Data(6),
+        outro => *outro,
+    };
+    normal(a) == normal(b)
+}
+
 /// Os CANTOS ditados com o cubo na mao. Cada canto e uma peca so, com tres
 /// adesivos — e e por eles que as seis faces se amarram: saber que `Ma`, `Ap` e
 /// `J` sao a MESMA peca ja diz que essas tres faces se encontram num vertice.
@@ -451,6 +543,51 @@ mod tests {
         for (i, f) in faces.iter().enumerate() {
             println!("face {i}: cantos {f:?}");
         }
+    }
+
+    /// As faces conferidas continuam validas, e os cantos delas batem com as
+    /// pecas ditadas — a checagem cruzada entre o que eu li e o que voce ditou.
+    #[test]
+    fn as_faces_conferidas_batem_com_os_cantos() {
+        for (i, txt) in FACES_LIDAS.iter().enumerate() {
+            let mut e = EstadoCal::vazio();
+            e.ler_face(0, txt).unwrap_or_else(|erro| panic!("face {i}: {erro}"));
+            for (l, c) in [(0, 0), (0, 6), (6, 0), (6, 6)] {
+                let mostra = e.casa(0, l, c).to_string();
+                let mostra = mostra.trim_start_matches('\'');
+                if mostra == "." {
+                    continue; // casa em branco: a peca sai da deducao, nao da leitura
+                }
+                assert!(
+                    CANTOS.iter().any(|p| p.contains(&mostra)),
+                    "face {i}, canto ({l},{c}) mostra '{mostra}', que nao esta em nenhuma peca"
+                );
+            }
+        }
+    }
+
+    /// As seis faces lidas formam um cubo com 294 adesivos, e nenhuma delas
+    /// deixou casa por preencher.
+    #[test]
+    fn as_seis_faces_formam_o_cubo() {
+        let mut e = EstadoCal::vazio();
+        for (i, txt) in FACES_LIDAS.iter().enumerate() {
+            e.ler_face(i, txt).unwrap_or_else(|erro| panic!("face {i}: {erro}"));
+        }
+        assert_eq!(e.0.len(), ADESIVOS, "294 adesivos");
+        let cheias = e.0.iter().filter(|a| a.simbolo != Simbolo::Vazio).count();
+        println!("{cheias} adesivos com desenho, {} em branco", ADESIVOS - cheias);
+        assert!(cheias > 200, "a maioria das casas traz desenho");
+    }
+
+    /// O 6 e o 9 sao a mesma peca — girada.
+    #[test]
+    fn seis_e_nove_sao_a_mesma_peca() {
+        assert!(mesmo_desenho(&Simbolo::Data(6), &Simbolo::Data(9)));
+        assert!(mesmo_desenho(&Simbolo::Data(9), &Simbolo::Data(6)));
+        assert!(!mesmo_desenho(&Simbolo::Data(6), &Simbolo::Data(8)));
+        // e nao vale para os outros: 2 e 5 nao viram um ao outro nesta fonte
+        assert!(!mesmo_desenho(&Simbolo::Data(2), &Simbolo::Data(5)));
     }
 
     #[test]
