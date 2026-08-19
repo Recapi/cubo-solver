@@ -2214,6 +2214,38 @@ impl CubeN {
 // ---------------------------------------------------------------------------
 
 impl CubeN {
+    pub fn orbitas_de_asa(&self) -> &Vec<[[usize; 2]; 24]> {
+        &self.wing_orbits
+    }
+
+    pub fn casas_dos_meios(&self) -> Vec<[usize; 2]> {
+        self.midge_facelets.map(|m| m.to_vec()).unwrap_or_default()
+    }
+
+    pub fn casas_dos_cantos(&self) -> Vec<[usize; 3]> {
+        self.corner_facelets.to_vec()
+    }
+
+    /// As casas de cada orbita de centro, na ordem dos indices de casa.
+    pub fn orbitas_de_centro(&self) -> &Vec<[usize; 24]> {
+        &self.center_orbits
+    }
+
+    /// Para onde vai o conteudo de cada casa da orbita `oi` ao aplicar `m`.
+    pub fn permuta_centro(&self, oi: usize, m: usize) -> &Vec<u8> {
+        &self.cmove[oi][m]
+    }
+
+    pub fn quantos_movimentos(&self) -> usize {
+        self.n_moves
+    }
+
+    /// Sequencia que 3-cicla exatamente estas tres casas da orbita de centro.
+    /// E o tijolo do solver do calendario: move tres pecas e nada mais.
+    pub fn ciclo_de_centro(&self, oi: usize, trio: [u8; 3]) -> Option<Vec<usize>> {
+        self.cycle_triple(oi, trio)
+    }
+
     /// As PECAS do cubo, cada uma como a lista de casas que ela ocupa.
     ///
     /// O solver normal nunca precisou disso: com seis cores, basta saber a cor

@@ -640,6 +640,31 @@ pub fn cubo_lido() -> EstadoCal {
     e
 }
 
+/// A que ORBITA uma casa pertence. Nao basta separar canto, borda e centro: as
+/// orbitas sao fechadas — uma peca de centro da orbita 3 nunca alcanca uma casa
+/// da orbita 1, por mais movimentos que se faca. Atribuir sem respeitar isso
+/// produz alvos impossiveis que so falham na hora de resolver.
+pub fn orbita_da_casa(f: usize) -> usize {
+    let cn = crate::cuben::cuben(N);
+    for (oi, orb) in cn.orbitas_de_centro().iter().enumerate() {
+        if orb.contains(&f) {
+            return 100 + oi;
+        }
+    }
+    for (oi, orb) in cn.orbitas_de_asa().iter().enumerate() {
+        if orb.iter().any(|w| w.contains(&f)) {
+            return 200 + oi;
+        }
+    }
+    if cn.casas_dos_meios().iter().any(|w| w.contains(&f)) {
+        return 300;
+    }
+    if cn.casas_dos_cantos().iter().any(|c| c.contains(&f)) {
+        return 400;
+    }
+    500 // nucleo
+}
+
 /// De que tipo e a casa (l,c) de uma face 7x7.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TipoCasa {
@@ -690,7 +715,7 @@ fn serve(peca: &Peca, quer: &Adesivo) -> bool {
 ///
 /// E um emparelhamento. Se algum mes nao fechar, ou a leitura tem erro ou ha
 /// uma restricao do cubo que ainda nao entendemos.
-pub fn atribuir(estado: &EstadoCal, ano: i32, mes: u32) -> Result<Vec<usize>, String> {
+pub fn atribuir(estado: &EstadoCal, face: usize, ano: i32, mes: u32) -> Result<Vec<usize>, String> {
     let pecas = inventario(estado);
     let alvo = crate::calendario::face(ano, mes);
     // casas da face, com o que pedem
@@ -701,19 +726,17 @@ pub fn atribuir(estado: &EstadoCal, ano: i32, mes: u32) -> Result<Vec<usize>, St
             casas.push((l, c, pedido(&celula, cor), tipo_da_casa(l, c)));
         }
     }
-    // candidatas de cada casa
-    let tipo_da_peca = |p: &Peca| match p.casas.len() {
-        3 => TipoCasa::Canto,
-        2 => TipoCasa::Borda,
-        _ => TipoCasa::Centro,
-    };
+    // Candidatas de cada casa: mesma ORBITA e o desenho pedido. A orbita e o
+    // criterio que importa — ela ja distingue canto, borda e centro, e ainda
+    // separa as orbitas de centro entre si, que sao fechadas.
     let candidatas: Vec<Vec<usize>> = casas
         .iter()
-        .map(|(_, _, quer, tipo)| {
+        .map(|(l, c, quer, _)| {
+            let orb = orbita_da_casa(face * POR_FACE + l * N + c);
             pecas
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| tipo_da_peca(p) == *tipo && serve(p, quer))
+                .filter(|(_, p)| orbita_da_casa(p.casas[0]) == orb && serve(p, quer))
                 .map(|(i, _)| i)
                 .collect()
         })
@@ -758,6 +781,145 @@ pub fn atribuir(estado: &EstadoCal, ano: i32, mes: u32) -> Result<Vec<usize>, St
         }
     }
     Ok(de_casa.into_iter().map(|x| x.unwrap()).collect())
+}
+
+/// Qual face usar como alvo para este mes.
+///
+/// Nao e escolha livre: a casa do meio da face (3,3) e o centro PRESO AO
+/// NUCLEO — ele nunca muda de lugar, so gira junto com o cubo inteiro. Entao
+/// nao se decide o que fica ali; decide-se por qual face olhar.
+///
+/// E e nisso que o projeto do cubo se apoia: os seis centros do meio carregam
+/// as datas 5 a 11 (sete valores em seis pecas, pelo truque do 6 que vira 9), e
+/// a casa (3,3) de um calendario mensal cai justamente nessa faixa. Escolher a
+/// face E escolher em que dia da semana o mes comeca.
+pub fn escolher_face(estado: &EstadoCal, ano: i32, mes: u32) -> Result<usize, String> {
+    let alvo = crate::calendario::face(ano, mes);
+    let (celula, cor) = alvo[3][3];
+    let quer = pedido(&celula, cor);
+    for f in 0..6 {
+        let meio = estado.casa(f, 3, 3);
+        if mesmo_desenho(&meio.simbolo, &quer.simbolo) && meio.cor == quer.cor {
+            return Ok(f);
+        }
+    }
+    let meios: Vec<String> = (0..6).map(|f| estado.casa(f, 3, 3).to_string()).collect();
+    Err(format!(
+        "nenhuma face tem {quer} no meio (os meios sao {})",
+        meios.join(", ")
+    ))
+}
+
+/// Leva os CENTROS da face-alvo para o lugar.
+///
+/// Sao 25 das 49 casas, o maior bloco. O tijolo e o 3-ciclo puro: ele move
+/// exatamente tres pecas de uma orbita e nada mais, entao as seis orbitas se
+/// resolvem em separado, sem uma desfazer a outra.
+///
+/// A face-alvo e a 0. Como a montagem so e unica a menos de girar o cubo
+/// inteiro, qualquer face serve — girar o cubo nao muda o que e possivel.
+///
+/// So as casas da face importam: as outras 20 de cada orbita ficam como
+/// cairem. Foi isso que o experimento mediu — alvo parcial custa ~337
+/// movimentos nos centros contra ~1726 do cubo inteiro, e a paridade some,
+/// porque as casas que nao importam absorvem a transposicao.
+pub fn resolver_centros(estado: &EstadoCal, ano: i32, mes: u32) -> Result<(usize, Vec<usize>), String> {
+    let cn = crate::cuben::cuben(N);
+    let face_alvo = escolher_face(estado, ano, mes)?;
+    let pecas = inventario(estado);
+    let atribuicao = atribuir(estado, face_alvo, ano, mes)?;
+
+    let mut movimentos = Vec::new();
+    for (oi, orbita) in cn.orbitas_de_centro().iter().enumerate() {
+        // onde cada casa da orbita esta, identificada pela casa de origem
+        let mut onde: Vec<usize> = orbita.to_vec();
+
+        // o que a face-alvo pede desta orbita: casa -> peca que deve chegar la
+        let mut pedidos: Vec<(usize, usize)> = Vec::new();
+        for l in 0..N {
+            for c in 0..N {
+                if tipo_da_casa(l, c) != TipoCasa::Centro {
+                    continue;
+                }
+                let casa = face_alvo * POR_FACE + l * N + c;
+                let Some(slot) = orbita.iter().position(|&f| f == casa) else {
+                    continue;
+                };
+                let peca = &pecas[atribuicao[l * N + c]];
+                pedidos.push((slot, peca.casas[0]));
+            }
+        }
+        if pedidos.is_empty() {
+            continue;
+        }
+
+        let aplicar = |onde: &mut Vec<usize>, seq: &[usize]| {
+            for &m in seq {
+                let cm = cn.permuta_centro(oi, m);
+                let antes = onde.clone();
+                for (q, &destino) in cm.iter().enumerate() {
+                    onde[destino as usize] = antes[q];
+                }
+            }
+        };
+        let certas = |onde: &Vec<usize>| {
+            pedidos.iter().filter(|(slot, peca)| onde[*slot] == *peca).count()
+        };
+
+        let mut guarda = 0;
+        while certas(&onde) < pedidos.len() {
+            guarda += 1;
+            if guarda > 40 {
+                return Err(format!(
+                    "orbita {oi}: parei em {}/{} casas",
+                    certas(&onde),
+                    pedidos.len()
+                ));
+            }
+            let base = certas(&onde);
+            let mut achou = None;
+            'busca: for a in 0..24usize {
+                for b in 0..24usize {
+                    if b == a {
+                        continue;
+                    }
+                    for c in 0..24usize {
+                        if c == a || c == b {
+                            continue;
+                        }
+                        for trio in [[a as u8, b as u8, c as u8], [a as u8, c as u8, b as u8]] {
+                            let Some(seq) = cn.ciclo_de_centro(oi, trio) else { continue };
+                            let mut teste = onde.clone();
+                            aplicar(&mut teste, &seq);
+                            if certas(&teste) > base {
+                                achou = Some((seq, teste));
+                                break 'busca;
+                            }
+                        }
+                    }
+                }
+            }
+            match achou {
+                Some((seq, novo)) => {
+                    movimentos.extend(seq);
+                    onde = novo;
+                }
+                None => {
+                    return Err(format!(
+                        "orbita {oi}: nenhum 3-ciclo avanca de {base}/{}",
+                        pedidos.len()
+                    ))
+                }
+            }
+        }
+    }
+    Ok((face_alvo, movimentos))
+}
+
+/// Os movimentos escritos como um humano leria.
+pub fn escrever(movimentos: &[usize]) -> String {
+    let cn = crate::cuben::cuben(N);
+    movimentos.iter().map(|&m| cn.move_name(m)).collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]
@@ -954,6 +1116,61 @@ mod tests {
     /// Os cantos do inventario tem de ser exatamente os oito que voce ditou —
     /// e agora com os tres adesivos juntos, deduzidos da geometria e nao da
     /// leitura de uma face isolada.
+    /// O solver dos centros: leva as 25 pecas de centro da face-alvo para o
+    /// lugar, e o teste confere o resultado SIMULANDO os movimentos — nao
+    /// acredita no solver, refaz a conta.
+    #[test]
+    #[ignore = "solver: os centros da face-alvo"]
+    fn resolve_os_centros_da_face() {
+        let estado = cubo_montado().expect("montagem");
+        for (ano, mes) in [(2026, 8), (2026, 5), (2027, 2)] {
+            let (face_alvo, movs) = resolver_centros(&estado, ano, mes)
+                .unwrap_or_else(|e| panic!("{ano}-{mes}: {e}"));
+            println!(
+                "{ano}-{mes:02}: face {face_alvo}, {} movimentos nos centros",
+                movs.len()
+            );
+
+            // conferencia: aplica os movimentos ao cubo e olha a face 0
+            let cn = crate::cuben::cuben(N);
+            let mut estado_final = estado.clone();
+            let mut posicao: Vec<usize> = (0..ADESIVOS).collect();
+            for &m in &movs {
+                let mut alto: Vec<u8> = posicao.iter().map(|&x| (x >> 8) as u8).collect();
+                let mut baixo: Vec<u8> = posicao.iter().map(|&x| (x & 255) as u8).collect();
+                cn.apply(&mut alto, m);
+                cn.apply(&mut baixo, m);
+                posicao = alto
+                    .iter()
+                    .zip(baixo.iter())
+                    .map(|(&a, &b)| ((a as usize) << 8) | b as usize)
+                    .collect();
+            }
+            for (i, &origem) in posicao.iter().enumerate() {
+                estado_final.0[i] = estado.0[origem];
+            }
+            let alvo = crate::calendario::face(ano, mes);
+            let mut erradas = 0;
+            for l in 0..N {
+                for c in 0..N {
+                    if tipo_da_casa(l, c) != TipoCasa::Centro {
+                        continue;
+                    }
+                    let (celula, cor) = alvo[l][c];
+                    let quer = pedido(&celula, cor);
+                    let tem = estado_final.casa(face_alvo, l, c);
+                    if !mesmo_desenho(&tem.simbolo, &quer.simbolo) || tem.cor != quer.cor {
+                        if erradas < 3 {
+                            println!("  ({l},{c}): queria {quer}, ficou {tem}");
+                        }
+                        erradas += 1;
+                    }
+                }
+            }
+            assert_eq!(erradas, 0, "{ano}-{mes}: {erradas} centros errados apos os movimentos");
+        }
+    }
+
     /// Levanta TODOS os desenhos que faltam, de uma vez — em vez de descobrir um
     /// por mes. Cada buraco e um adesivo que eu li errado ou uma restricao do
     /// cubo que ainda nao entendemos.
@@ -976,9 +1193,8 @@ mod tests {
                         let (celula, cor) = alvo[l][c];
                         let quer = pedido(&celula, cor);
                         let tipo = tipo_da_casa(l, c);
-                        let tem = pecas
-                            .iter()
-                            .any(|p| tipo_da_peca(p) == tipo && serve(p, &quer));
+                        let tem = pecas.iter().any(|p| tipo_da_peca(p) == tipo && serve(p, &quer));
+                        let _ = tipo;
                         if !tem {
                             let chave = (quer.to_string(), tipo);
                             if !faltando.contains(&chave) {
@@ -1026,7 +1242,14 @@ mod tests {
         for ano in 2024..=2030 {
             for mes in 1..=12u32 {
                 testados += 1;
-                if let Err(e) = atribuir(&estado, ano, mes) {
+                let face = match escolher_face(&estado, ano, mes) {
+                    Ok(f) => f,
+                    Err(e) => {
+                        falhas.push(format!("{ano}-{mes:02}: {e}"));
+                        continue;
+                    }
+                };
+                if let Err(e) = atribuir(&estado, face, ano, mes) {
                     falhas.push(format!("{ano}-{mes:02}: {e}"));
                 }
             }
