@@ -25,6 +25,32 @@ pub const MESES: [&str; 12] = [
 ];
 pub const DIAS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
+/// Como o nome de cada mes se reparte pelas PECAS.
+///
+/// A imagem oficial mostra uma letra por casa, mas ela nao marca onde uma peca
+/// termina e a outra comeca — e o cubo real reparte diferente: o CANTO leva o
+/// primeiro pedaco, que tem uma ou duas letras conforme a peca, e as bordas
+/// seguintes levam o resto, uma letra cada.
+///
+/// Conferido contra o cubo na mao: os cantos sao `Ma`, `Ap`, `J`, `De`, `No`,
+/// `A`, `Oc`, `Se` e `Fe`. Repare na economia do fabricante — `J` serve
+/// janeiro, junho e julho; `Ma` serve marco e maio; e abril tem duas grafias
+/// possiveis (`Ap`+`r`, ou `A`+`p`+`r`).
+pub const NOMES: [&[&str]; 12] = [
+    &["J", "a", "n"],
+    &["Fe", "b"],
+    &["Ma", "r"],
+    &["Ap", "r"],
+    &["Ma", "y"],
+    &["J", "u", "n"],
+    &["J", "u", "l"],
+    &["A", "u", "g"],
+    &["Se", "p"],
+    &["Oc", "t"],
+    &["No", "v"],
+    &["De", "c"],
+];
+
 /// A cor de uma casa vem da coluna: domingo vermelho, sabado azul.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Cor {
@@ -47,8 +73,8 @@ impl Cor {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Celula {
     Vazia,
-    /// uma letra do nome do mes
-    Letra(char),
+    /// um pedaco do nome do mes — uma letra nas bordas, duas no canto
+    Letra(&'static str),
     /// cabecalho do dia da semana
     Dia(&'static str),
     Data(u32),
@@ -89,8 +115,8 @@ pub fn dia_da_semana_do_primeiro(ano: i32, mes: u32) -> u32 {
 pub fn face(ano: i32, mes: u32) -> Face {
     let mut f = [[(Celula::Vazia, Cor::Preto); 7]; 7];
 
-    for (i, ch) in MESES[(mes - 1) as usize].chars().enumerate() {
-        f[0][i] = (Celula::Letra(ch), Cor::Preto);
+    for (i, pedaco) in NOMES[(mes - 1) as usize].iter().enumerate() {
+        f[0][i] = (Celula::Letra(pedaco), Cor::Preto);
     }
     for (c, nome) in DIAS.iter().enumerate() {
         f[1][c] = (Celula::Dia(nome), Cor::da_coluna(c));
@@ -129,7 +155,7 @@ pub fn desenhar(ano: i32, mes: u32) -> String {
             };
             let texto = match celula {
                 Celula::Vazia => ".".to_string(),
-                Celula::Letra(c) => c.to_string(),
+                Celula::Letra(t) => t.to_string(),
                 Celula::Dia(d) => d.to_string(),
                 Celula::Data(d) => d.to_string(),
                 Celula::Dupla(a, b) => format!("{a}/{b}"),

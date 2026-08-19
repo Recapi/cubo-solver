@@ -257,7 +257,13 @@ pub const FACE_LIDA_3: &str = "    27(v) 17(v) 14(v) 27  20(a) 27(a) 'Fe
     22(v) 23    24    25  26    27    26(a)
     'Oc   .     .     30  13(v) 't    29(v)";
 
-/// Face 4, lida e conferida. Sem correcoes.
+/// Face 4, lida e conferida. Uma correcao, e ela veio do MODELO, nao do olho:
+/// `(3,6)` e um `4` vermelho, que eu tinha lido como `7`. O traco horizontal
+/// do desenho me fez ver um sete europeu.
+///
+/// Quem achou o erro foi a prova de que o cubo monta qualquer mes: faltava
+/// exatamente um adesivo — a borda vermelha do 4 — enquanto todo outro numero
+/// tinha a sua. Um erro em 294 adesivos, achado por checagem independente.
 ///
 /// Ela estabelece um fato que importa para o alvo: existem DUAS pecas `24/31`,
 /// uma vermelha (a de canto, peca 8) e uma preta (aqui em (5,6)). Faz sentido —
@@ -266,10 +272,11 @@ pub const FACE_LIDA_3: &str = "    27(v) 17(v) 14(v) 27  20(a) 27(a) 'Fe
 pub const FACE_LIDA_4: &str = "    'Se   'y  .   .   .   .   'De
     23(a) 21  14  7   .   .   31
     .     .   1   8   15  .   4(a)
-    28    8   4   10  11  .   7(v)
+    28    8   4   10  11  .   4(v)
     9(v)  15  16  17  18  .   28
     30    .   .   5   12  19  24/31
     28(v) .   30  31  30  'n  .";
+// (a linha 3 termina em 4(v), corrigido: era 7(v))
 
 /// Face 5, lida e conferida. Sem correcoes — inclusive o `6` azul de (3,6), que
 /// eu marquei como duvida por ja ter caido no truque do 6/9 na face 3.
@@ -317,6 +324,13 @@ pub const FACES_LIDAS: [&str; 6] = [
 pub fn mesmo_desenho(a: &Simbolo, b: &Simbolo) -> bool {
     let normal = |s: &Simbolo| match s {
         Simbolo::Data(9) => Simbolo::Data(6),
+        // MESMA ideia nas letras, e foi o teste dos meses que revelou: nao
+        // existe peca `u` no cubo, e mesmo assim junho, julho e agosto pedem
+        // uma. Existe `n` — e `u` de cabeca para baixo E `n`. O fabricante
+        // aplicou o truque do 6/9 tambem no alfabeto.
+        Simbolo::Letra(t) if t.como_str() == "u" => {
+            Simbolo::Letra(Texto::novo("n").unwrap())
+        }
         outro => *outro,
     };
     normal(a) == normal(b)
@@ -626,6 +640,126 @@ pub fn cubo_lido() -> EstadoCal {
     e
 }
 
+/// De que tipo e a casa (l,c) de uma face 7x7.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TipoCasa {
+    Canto,
+    Borda,
+    Centro,
+}
+
+pub fn tipo_da_casa(l: usize, c: usize) -> TipoCasa {
+    let borda_l = l == 0 || l == N - 1;
+    let borda_c = c == 0 || c == N - 1;
+    match (borda_l, borda_c) {
+        (true, true) => TipoCasa::Canto,
+        (true, _) | (_, true) => TipoCasa::Borda,
+        _ => TipoCasa::Centro,
+    }
+}
+
+/// O que a face-alvo pede numa casa: um simbolo, com uma cor.
+fn pedido(celula: &crate::calendario::Celula, cor: crate::calendario::Cor) -> Adesivo {
+    use crate::calendario::Celula;
+    let simbolo = match celula {
+        Celula::Vazia => Simbolo::Vazio,
+        Celula::Data(d) => Simbolo::Data(*d as u8),
+        Celula::Dupla(a, b) => Simbolo::Dupla(*a as u8, *b as u8),
+        Celula::Letra(t) => Simbolo::Letra(Texto::novo(t).unwrap()),
+        Celula::Dia(d) => Simbolo::Dia(
+            crate::calendario::DIAS.iter().position(|x| x == d).unwrap_or(0) as u8,
+        ),
+    };
+    Adesivo { simbolo, cor, rot: Rotacao(0) }
+}
+
+/// Uma peca SERVE numa casa se tem um adesivo com o desenho e a cor pedidos.
+/// O 6 e o 9 contam como o mesmo desenho — a peca so precisa ser girada.
+fn serve(peca: &Peca, quer: &Adesivo) -> bool {
+    peca.mostra
+        .iter()
+        .any(|a| mesmo_desenho(&a.simbolo, &quer.simbolo) && a.cor == quer.cor)
+}
+
+/// O cubo consegue montar o calendario deste mes?
+///
+/// Cada uma das 49 casas da face pede um desenho, e so pode ser preenchida por
+/// uma peca do TIPO certo — canto no canto, aresta na borda, centro no miolo —
+/// que carregue aquele desenho. Cada peca serve no maximo uma casa da face
+/// (uma peca so mostra um adesivo por face).
+///
+/// E um emparelhamento. Se algum mes nao fechar, ou a leitura tem erro ou ha
+/// uma restricao do cubo que ainda nao entendemos.
+pub fn atribuir(estado: &EstadoCal, ano: i32, mes: u32) -> Result<Vec<usize>, String> {
+    let pecas = inventario(estado);
+    let alvo = crate::calendario::face(ano, mes);
+    // casas da face, com o que pedem
+    let mut casas: Vec<(usize, usize, Adesivo, TipoCasa)> = Vec::new();
+    for l in 0..N {
+        for c in 0..N {
+            let (celula, cor) = alvo[l][c];
+            casas.push((l, c, pedido(&celula, cor), tipo_da_casa(l, c)));
+        }
+    }
+    // candidatas de cada casa
+    let tipo_da_peca = |p: &Peca| match p.casas.len() {
+        3 => TipoCasa::Canto,
+        2 => TipoCasa::Borda,
+        _ => TipoCasa::Centro,
+    };
+    let candidatas: Vec<Vec<usize>> = casas
+        .iter()
+        .map(|(_, _, quer, tipo)| {
+            pecas
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| tipo_da_peca(p) == *tipo && serve(p, quer))
+                .map(|(i, _)| i)
+                .collect()
+        })
+        .collect();
+    for (i, cands) in candidatas.iter().enumerate() {
+        if cands.is_empty() {
+            let (l, c, quer, tipo) = &casas[i];
+            return Err(format!(
+                "({l},{c}) pede {quer} num {tipo:?}, e nenhuma peca serve"
+            ));
+        }
+    }
+    // emparelhamento por caminhos aumentantes
+    let mut de_peca: Vec<Option<usize>> = vec![None; pecas.len()];
+    let mut de_casa: Vec<Option<usize>> = vec![None; casas.len()];
+    fn tenta(
+        casa: usize,
+        candidatas: &[Vec<usize>],
+        de_peca: &mut Vec<Option<usize>>,
+        de_casa: &mut Vec<Option<usize>>,
+        visto: &mut Vec<bool>,
+    ) -> bool {
+        for &p in &candidatas[casa] {
+            if visto[p] {
+                continue;
+            }
+            visto[p] = true;
+            let livre = de_peca[p].is_none();
+            if livre || tenta(de_peca[p].unwrap(), candidatas, de_peca, de_casa, visto) {
+                de_peca[p] = Some(casa);
+                de_casa[casa] = Some(p);
+                return true;
+            }
+        }
+        false
+    }
+    for casa in 0..casas.len() {
+        let mut visto = vec![false; pecas.len()];
+        if !tenta(casa, &candidatas, &mut de_peca, &mut de_casa, &mut visto) {
+            let (l, c, quer, _) = &casas[casa];
+            return Err(format!("({l},{c}) pede {quer}, mas as pecas ja estao tomadas"));
+        }
+    }
+    Ok(de_casa.into_iter().map(|x| x.unwrap()).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -820,6 +954,90 @@ mod tests {
     /// Os cantos do inventario tem de ser exatamente os oito que voce ditou —
     /// e agora com os tres adesivos juntos, deduzidos da geometria e nao da
     /// leitura de uma face isolada.
+    /// Levanta TODOS os desenhos que faltam, de uma vez — em vez de descobrir um
+    /// por mes. Cada buraco e um adesivo que eu li errado ou uma restricao do
+    /// cubo que ainda nao entendemos.
+    #[test]
+    #[ignore = "diagnóstico: que desenhos faltam"]
+    fn o_que_falta_para_montar_os_meses() {
+        let estado = cubo_montado().expect("montagem");
+        let pecas = inventario(&estado);
+        let tipo_da_peca = |p: &Peca| match p.casas.len() {
+            3 => TipoCasa::Canto,
+            2 => TipoCasa::Borda,
+            _ => TipoCasa::Centro,
+        };
+        let mut faltando: Vec<(String, TipoCasa)> = Vec::new();
+        for ano in 2024..=2030 {
+            for mes in 1..=12u32 {
+                let alvo = crate::calendario::face(ano, mes);
+                for l in 0..N {
+                    for c in 0..N {
+                        let (celula, cor) = alvo[l][c];
+                        let quer = pedido(&celula, cor);
+                        let tipo = tipo_da_casa(l, c);
+                        let tem = pecas
+                            .iter()
+                            .any(|p| tipo_da_peca(p) == tipo && serve(p, &quer));
+                        if !tem {
+                            let chave = (quer.to_string(), tipo);
+                            if !faltando.contains(&chave) {
+                                faltando.push(chave);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        println!("{} desenhos faltando:", faltando.len());
+        for (d, t) in &faltando {
+            println!("  {d} num {t:?}");
+        }
+        // e o que EXISTE de cada numero, para ajudar a achar o erro de leitura
+        for alvo_num in [4u8, 10, 11] {
+            let onde: Vec<String> = pecas
+                .iter()
+                .filter(|p| p.mostra.iter().any(|a| a.simbolo == Simbolo::Data(alvo_num)))
+                .map(|p| {
+                    let t = format!("{:?}", tipo_da_peca(p));
+                    let cores: Vec<String> = p
+                        .mostra
+                        .iter()
+                        .filter(|a| a.simbolo == Simbolo::Data(alvo_num))
+                        .map(|a| format!("{a}"))
+                        .collect();
+                    format!("{t}:{}", cores.join(","))
+                })
+                .collect();
+            println!("  pecas com {alvo_num}: {}", onde.join("  "));
+        }
+    }
+
+    /// O cubo tem de conseguir montar QUALQUER mes — e isso e uma prova
+    /// independente da leitura. Se um mes nao fechasse, ou eu li algo errado ou
+    /// ha uma restricao do cubo que ainda nao entendemos.
+    #[test]
+    #[ignore = "prova: o cubo monta qualquer mês"]
+    fn o_cubo_monta_qualquer_mes() {
+        let estado = cubo_montado().expect("montagem");
+        let mut falhas = Vec::new();
+        let mut testados = 0;
+        // 2024 a 2030 cobre os sete comecos de semana em todos os doze meses
+        for ano in 2024..=2030 {
+            for mes in 1..=12u32 {
+                testados += 1;
+                if let Err(e) = atribuir(&estado, ano, mes) {
+                    falhas.push(format!("{ano}-{mes:02}: {e}"));
+                }
+            }
+        }
+        println!("{testados} meses testados, {} falharam", falhas.len());
+        for f in falhas.iter().take(6) {
+            println!("  {f}");
+        }
+        assert!(falhas.is_empty(), "{} meses nao fecham", falhas.len());
+    }
+
     #[test]
     #[ignore = "depende do encaixe descoberto"]
     fn os_cantos_do_inventario_sao_os_ditados() {
