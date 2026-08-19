@@ -2214,6 +2214,46 @@ impl CubeN {
 // ---------------------------------------------------------------------------
 
 impl CubeN {
+    /// As PECAS do cubo, cada uma como a lista de casas que ela ocupa.
+    ///
+    /// O solver normal nunca precisou disso: com seis cores, basta saber a cor
+    /// de cada casa. O cubo-calendario precisa — tres adesivos de um canto sao
+    /// uma peca so, e mover a peca move os tres juntos.
+    ///
+    /// A ordem e: 8 cantos (3 casas), os meios de aresta (2 casas, so nos
+    /// impares), as asas orbita a orbita (2 casas) e os centros (1 casa).
+    pub fn pecas(&self) -> Vec<Vec<usize>> {
+        let mut v: Vec<Vec<usize>> = Vec::new();
+        for c in self.corner_facelets.iter() {
+            v.push(c.to_vec());
+        }
+        if let Some(mf) = &self.midge_facelets {
+            for m in mf.iter() {
+                v.push(m.to_vec());
+            }
+        }
+        for orb in self.wing_orbits.iter() {
+            for w in orb.iter() {
+                v.push(w.to_vec());
+            }
+        }
+        for orb in self.center_orbits.iter() {
+            for &f in orb.iter() {
+                v.push(vec![f]);
+            }
+        }
+        // os centros do meio dos cubos impares: presos ao nucleo, mas sao pecas
+        if self.n % 2 == 1 {
+            let m = (self.n - 1) / 2;
+            for f in 0..6 {
+                v.push(vec![f * self.n * self.n + m * self.n + m]);
+            }
+        }
+        v
+    }
+}
+
+impl CubeN {
     /// Interpreta a planificacao: valida pecas e normaliza cores -> faces.
     /// Impar: esquema pelos centros fixos do meio. Par: ancora no canto DBL.
     pub fn parse(&self, input: &str) -> Result<(Vec<u8>, [char; 6]), String> {

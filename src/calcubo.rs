@@ -445,6 +445,187 @@ fn permutacoes(v: &mut Vec<usize>, k: usize, f: &mut impl FnMut(&[usize])) {
     }
 }
 
+/// Uma PECA do cubo-calendario: onde ela esta e o que mostra em cada casa.
+#[derive(Clone, Debug)]
+pub struct Peca {
+    /// as casas que ela ocupa (1 para centro, 2 para aresta, 3 para canto)
+    pub casas: Vec<usize>,
+    /// o desenho de cada casa, na mesma ordem
+    pub mostra: Vec<Adesivo>,
+}
+
+impl Peca {
+    /// Quantos adesivos com desenho a peca tem — os em branco nao contam para
+    /// identifica-la.
+    pub fn desenhados(&self) -> usize {
+        self.mostra.iter().filter(|a| a.simbolo != Simbolo::Vazio).count()
+    }
+}
+
+/// Agrupa os 294 adesivos nas pecas do cubo. E o passo que separa "mapa de
+/// adesivos" de "cubo": tres adesivos de um canto sao UMA peca, e movem juntos.
+pub fn inventario(estado: &EstadoCal) -> Vec<Peca> {
+    let cn = crate::cuben::cuben(N);
+    cn.pecas()
+        .into_iter()
+        .map(|casas| {
+            let mostra = casas.iter().map(|&f| estado.0[f]).collect();
+            Peca { casas, mostra }
+        })
+        .collect()
+}
+
+/// Uma face lida, girada `k` quartos de volta no sentido horario.
+fn girar(face: &[Adesivo], k: u8) -> Vec<Adesivo> {
+    let mut atual = face.to_vec();
+    for _ in 0..k {
+        let mut novo = vec![Adesivo::default(); POR_FACE];
+        for l in 0..N {
+            for c in 0..N {
+                // girar 90 graus: a casa (l,c) passa a mostrar o que estava em
+                // (N-1-c, l)
+                novo[l * N + c] = atual[(N - 1 - c) * N + l];
+            }
+        }
+        atual = novo;
+    }
+    atual
+}
+
+/// Monta o cubo com as fotos numa dada ordem e rotacao.
+pub fn montar(ordem: &[usize; 6], giros: &[u8; 6]) -> EstadoCal {
+    let mut e = EstadoCal::vazio();
+    for (destino, (&foto, &k)) in ordem.iter().zip(giros.iter()).enumerate() {
+        let mut face = EstadoCal::vazio();
+        face.ler_face(0, FACES_LIDAS[foto]).expect("face valida");
+        let girada = girar(&face.0[..POR_FACE], k);
+        e.0[destino * POR_FACE..(destino + 1) * POR_FACE].copy_from_slice(&girada);
+    }
+    e
+}
+
+/// Descobre COMO as seis fotos se encaixam: qual face do cubo cada uma e, e
+/// quantos quartos de volta esta girada.
+///
+/// Seis fotos soltas nao dizem isso, e sem isso nao ha cubo. Mas os CANTOS
+/// ditados dizem: cada um e uma peca com tres adesivos, e so o encaixe certo
+/// produz exatamente aqueles oito trios. Sao 720 ordens x 4096 rotacoes — um
+/// espaco pequeno, e o criterio e exato.
+pub fn descobrir_montagem() -> Vec<([usize; 6], [u8; 6])> {
+    let cn = crate::cuben::cuben(N);
+    let cantos: Vec<Vec<usize>> = cn.pecas().into_iter().filter(|p| p.len() == 3).collect();
+    let esperado = {
+        let mut v: Vec<Vec<String>> = CANTOS
+            .iter()
+            .map(|c| {
+                let mut t: Vec<String> = c.iter().map(|s| s.to_string()).collect();
+                t.sort();
+                t
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    // as seis faces lidas, ja giradas nas quatro posicoes
+    let mut giradas: Vec<[Vec<Adesivo>; 4]> = Vec::new();
+    for txt in FACES_LIDAS.iter() {
+        let mut face = EstadoCal::vazio();
+        face.ler_face(0, txt).expect("face valida");
+        let base = face.0[..POR_FACE].to_vec();
+        giradas.push([
+            girar(&base, 0),
+            girar(&base, 1),
+            girar(&base, 2),
+            girar(&base, 3),
+        ]);
+    }
+    let mut achados = Vec::new();
+    let mut ordem = [0usize; 6];
+    let mut usada = [false; 6];
+    permuta_faces(&mut ordem, &mut usada, 0, &mut |ordem: &[usize; 6]| {
+        for bits in 0..4096u32 {
+            let mut giros = [0u8; 6];
+            for (i, g) in giros.iter_mut().enumerate() {
+                *g = ((bits >> (2 * i)) & 3) as u8;
+            }
+            let mut trios: Vec<Vec<String>> = cantos
+                .iter()
+                .map(|casas| {
+                    let mut t: Vec<String> = casas
+                        .iter()
+                        .map(|&f| {
+                            let face = f / POR_FACE;
+                            let dentro = f % POR_FACE;
+                            let foto = ordem[face];
+                            giradas[foto][giros[face] as usize][dentro]
+                                .to_string()
+                                .trim_start_matches('\'')
+                                .to_string()
+                        })
+                        .collect();
+                    t.sort();
+                    t
+                })
+                .collect();
+            trios.sort();
+            if trios == esperado {
+                achados.push((*ordem, giros));
+            }
+        }
+    });
+    achados
+}
+
+fn permuta_faces(
+    ordem: &mut [usize; 6],
+    usada: &mut [bool; 6],
+    k: usize,
+    f: &mut impl FnMut(&[usize; 6]),
+) {
+    if k == 6 {
+        f(ordem);
+        return;
+    }
+    for i in 0..6 {
+        if usada[i] {
+            continue;
+        }
+        usada[i] = true;
+        ordem[k] = i;
+        permuta_faces(ordem, usada, k + 1, f);
+        usada[i] = false;
+    }
+}
+
+/// O cubo montado, com o encaixe descoberto pelos cantos.
+///
+/// A busca acha 24 montagens compativeis, e esse numero e a prova de que esta
+/// certo: um cubo tem exatamente 24 orientacoes no espaco, entao as 24 sao o
+/// MESMO cubo visto de angulos diferentes. A montagem e unica a menos de girar
+/// o cubo inteiro — que e o melhor resultado possivel, e nao muda nada para
+/// resolver.
+pub fn cubo_montado() -> Result<EstadoCal, String> {
+    let achados = descobrir_montagem();
+    match achados.len() {
+        0 => Err("nenhuma montagem bate com os cantos ditados".into()),
+        24 => {
+            let (ordem, giros) = achados[0];
+            Ok(montar(&ordem, &giros))
+        }
+        n => Err(format!("{n} montagens — esperava 24 (as orientacoes de um cubo)")),
+    }
+}
+
+/// O cubo lido das fotos, montado na ordem em que foram lidas — SEM o encaixe
+/// descoberto. Serve para inspecao, nao para resolver.
+pub fn cubo_lido() -> EstadoCal {
+    let mut e = EstadoCal::vazio();
+    for (i, txt) in FACES_LIDAS.iter().enumerate() {
+        e.ler_face(i, txt).expect("as faces conferidas sao validas");
+    }
+    e
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,6 +769,88 @@ mod tests {
         assert!(!mesmo_desenho(&Simbolo::Data(6), &Simbolo::Data(8)));
         // e nao vale para os outros: 2 e 5 nao viram um ao outro nesta fonte
         assert!(!mesmo_desenho(&Simbolo::Data(2), &Simbolo::Data(5)));
+    }
+
+    /// O inventario tem de bater com a geometria de um 7x7: 8 cantos, 12 meios
+    /// de aresta, 48 asas e 150 centros — 218 pecas, 294 adesivos.
+    #[test]
+    fn o_inventario_bate_com_a_geometria() {
+        let pecas = inventario(&cubo_lido());
+        let cantos = pecas.iter().filter(|p| p.casas.len() == 3).count();
+        let duplas = pecas.iter().filter(|p| p.casas.len() == 2).count();
+        let solos = pecas.iter().filter(|p| p.casas.len() == 1).count();
+        assert_eq!(cantos, 8, "oito cantos");
+        assert_eq!(duplas, 12 + 48, "doze meios de aresta e 48 asas");
+        assert_eq!(solos, 150, "150 centros, contando os seis do meio");
+        assert_eq!(pecas.len(), 218);
+        assert_eq!(pecas.iter().map(|p| p.casas.len()).sum::<usize>(), ADESIVOS);
+        // nenhuma casa em duas pecas
+        let mut vistas = vec![false; ADESIVOS];
+        for p in &pecas {
+            for &f in &p.casas {
+                assert!(!vistas[f], "casa {f} aparece em duas pecas");
+                vistas[f] = true;
+            }
+        }
+        assert!(vistas.iter().all(|&v| v), "toda casa pertence a alguma peca");
+    }
+
+    /// O encaixe das seis fotos sai dos cantos ditados: so a montagem certa
+    /// produz exatamente aqueles oito trios. Sem isso, seis fotos sao seis
+    /// quadrados soltos e qualquer solucao calculada sairia errada.
+    #[test]
+    #[ignore = "busca o encaixe das seis fotos (720 x 4096 combinacoes)"]
+    fn descobre_como_as_fotos_se_encaixam() {
+        let achados = descobrir_montagem();
+        println!("{} montagens compativeis com os cantos ditados", achados.len());
+        for (ordem, giros) in achados.iter().take(4) {
+            println!("  fotos {ordem:?} giradas {giros:?}");
+        }
+        // 24 = as orientacoes de um cubo. Achar exatamente 24 quer dizer que a
+        // montagem e UNICA a menos de girar o cubo inteiro — todas as 24 sao o
+        // mesmo cubo visto de outro angulo. Menos que isso seria contradicao;
+        // mais, seria leitura ambigua.
+        assert_eq!(
+            achados.len(),
+            24,
+            "a montagem deveria ser unica a menos de rotacao do cubo"
+        );
+    }
+
+    /// Os cantos do inventario tem de ser exatamente os oito que voce ditou —
+    /// e agora com os tres adesivos juntos, deduzidos da geometria e nao da
+    /// leitura de uma face isolada.
+    #[test]
+    #[ignore = "depende do encaixe descoberto"]
+    fn os_cantos_do_inventario_sao_os_ditados() {
+        let pecas = inventario(&cubo_montado().expect("montagem"));
+        let mut achados: Vec<Vec<String>> = pecas
+            .iter()
+            .filter(|p| p.casas.len() == 3)
+            .map(|p| {
+                let mut v: Vec<String> = p
+                    .mostra
+                    .iter()
+                    .map(|a| a.to_string().trim_start_matches('\'').to_string())
+                    .collect();
+                v.sort();
+                v
+            })
+            .collect();
+        achados.sort();
+        let mut esperados: Vec<Vec<String>> = CANTOS
+            .iter()
+            .map(|c| {
+                let mut v: Vec<String> = c.iter().map(|s| s.to_string()).collect();
+                v.sort();
+                v
+            })
+            .collect();
+        esperados.sort();
+        for (a, e) in achados.iter().zip(esperados.iter()) {
+            println!("  inventario {a:?}  ditado {e:?}");
+        }
+        assert_eq!(achados, esperados, "os cantos do inventario nao batem com os ditados");
     }
 
     #[test]
