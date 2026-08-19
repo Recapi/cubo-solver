@@ -5221,6 +5221,320 @@ mod tests {
         }
     }
 
+    /// EXPERIMENTO do cubo-calendario. Ali as pecas sao DISTINGUIVEIS — cada
+    /// centro traz um numero impresso — e o alvo deixa de ser "cada face de uma
+    /// cor" para virar "cada peca na sua casa". A pergunta que decide o projeto
+    /// inteiro: o maquinario de 3-ciclos que ja temos da conta disso?
+    ///
+    /// Aqui a resposta e medida, sem reescrever nada: as casas de centro sao
+    /// numeradas, um embaralhamento as permuta, e tenta-se devolver cada uma ao
+    /// lugar usando SO os 3-ciclos puros. Mede quantos movimentos custa e com
+    /// que frequencia sobra uma transposicao (permutacao impar), que nenhum
+    /// 3-ciclo desfaz e que exigiria correcao propria.
+    #[test]
+    #[ignore = "experimento: centros como supercubo (peças distinguíveis)"]
+    fn supercubo_centros() {
+        let cn = cuben(7);
+        let mut semente = 0x2026_08_19u64;
+        let mut sorteio = || {
+            semente = semente.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (semente >> 33) as usize
+        };
+        let mut total_mov = 0usize;
+        let mut total_ciclos = 0usize;
+        let mut impares = 0usize;
+        let casos = 20;
+        for caso in 0..casos {
+            // embaralha: uma permutacao das casas por orbita, pelos movimentos reais
+            let n_orb = cn.center_orbits.len();
+            let mut pos: Vec<[u8; 24]> = (0..n_orb).map(|_| std::array::from_fn(|i| i as u8)).collect();
+            for _ in 0..80 {
+                let m = sorteio() % cn.n_moves;
+                for oi in 0..n_orb {
+                    let cm = &cn.cmove[oi][m];
+                    let antes = pos[oi];
+                    let mut depois = [0u8; 24];
+                    for x in 0..24 {
+                        depois[cm[x] as usize] = antes[x];
+                    }
+                    pos[oi] = depois;
+                }
+            }
+            for oi in 0..n_orb {
+                let aplicar = |p: &mut [u8; 24], seq: &[usize]| {
+                    for &m in seq {
+                        let cm = &cn.cmove[oi][m];
+                        let antes = *p;
+                        let mut depois = [0u8; 24];
+                        for x in 0..24 {
+                            depois[cm[x] as usize] = antes[x];
+                        }
+                        *p = depois;
+                    }
+                };
+                let certas = |p: &[u8; 24]| (0..24).filter(|&i| p[i] == i as u8).count();
+                let mut p = pos[oi];
+                let mut guarda = 0;
+                loop {
+                    let base = certas(&p);
+                    if base == 24 {
+                        break;
+                    }
+                    guarda += 1;
+                    if guarda > 60 {
+                        break;
+                    }
+                    let erradas: Vec<usize> = (0..24).filter(|&i| p[i] != i as u8).collect();
+                    // procura um 3-ciclo que acerte pelo menos duas casas
+                    let mut achou = None;
+                    'busca: for &a in &erradas {
+                        for &b in &erradas {
+                            if b == a { continue; }
+                            for &c in &erradas {
+                                if c == a || c == b { continue; }
+                                for trio in [[a as u8, b as u8, c as u8], [a as u8, c as u8, b as u8]] {
+                                    if let Some(seq) = cn.cycle_triple(oi, trio) {
+                                        let mut q = p;
+                                        aplicar(&mut q, &seq);
+                                        // aceita QUALQUER avanco: com quatro casas
+                                        // fora (duas transposicoes) o primeiro
+                                        // ciclo so acerta uma, e exigir duas
+                                        // travava o guloso — era limite meu, nao
+                                        // do maquinario
+                                        if certas(&q) > base {
+                                            achou = Some((seq, q));
+                                            break 'busca;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    match achou {
+                        Some((seq, q)) => {
+                            total_mov += seq.len();
+                            total_ciclos += 1;
+                            p = q;
+                        }
+                        None => break,
+                    }
+                }
+                let sobrando = 24 - certas(&p);
+                if sobrando > 0 {
+                    impares += 1;
+                    if caso == 0 {
+                        println!("  orbita {oi}: sobraram {sobrando} casas — transposicao pura");
+                    }
+                }
+            }
+        }
+        let orbitas = casos * cn.center_orbits.len();
+        println!(
+            "
+{casos} cubos x {} orbitas = {orbitas} permutacoes",
+            cn.center_orbits.len()
+        );
+        println!("  3-ciclos usados: {total_ciclos} ({:.1} por orbita)", total_ciclos as f64 / orbitas as f64);
+        println!("  movimentos: {total_mov} ({:.1} por orbita, {:.1} por peca)",
+            total_mov as f64 / orbitas as f64,
+            total_mov as f64 / (orbitas * 24) as f64);
+        println!("  so os centros de um 7x7 custariam ~{:.0} movimentos",
+            6.0 * total_mov as f64 / orbitas as f64);
+        println!("  orbitas que sobraram com transposicao: {impares} de {orbitas} ({:.0}%)",
+            100.0 * impares as f64 / orbitas as f64);
+    }
+
+    /// ALVO PARCIAL: o calendario precisa de UMA face correta, nao do cubo
+    /// inteiro — e o proprio tutorial da tribox resolve assim, em dez passos por
+    /// tiras. Este teste mede o que isso muda.
+    ///
+    /// Numa face 7x7, de cada orbita de centro so QUATRO casas aparecem (uma por
+    /// quadrante). Colocar 4 pecas certas entre 24 casas e outro problema, bem
+    /// menor que ordenar as 24. E ha uma segunda economia esperada: como as 20
+    /// casas restantes nao importam, elas absorvem qualquer transposicao — a
+    /// paridade que trava metade das orbitas no alvo total deve sumir.
+    #[test]
+    #[ignore = "experimento: uma face só (alvo parcial)"]
+    fn supercubo_face_unica() {
+        let cn = cuben(7);
+        let por_face = cn.n * cn.n;
+        let mut semente = 0x1234_5678_9abcu64;
+        let mut sorteio = || {
+            semente = semente.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (semente >> 33) as usize
+        };
+        let n_orb = cn.center_orbits.len();
+        // as casas de cada orbita que aparecem na face U
+        let alvos: Vec<Vec<usize>> = (0..n_orb)
+            .map(|oi| {
+                (0..24)
+                    .filter(|&q| cn.center_orbits[oi][q] / por_face == 0)
+                    .collect()
+            })
+            .collect();
+        for (oi, a) in alvos.iter().enumerate() {
+            assert_eq!(a.len(), 4, "orbita {oi}: esperava 4 casas na face U");
+        }
+        println!("cada orbita de centro poe {} casas na face (de 24)", alvos[0].len());
+
+        let (mut total_mov, mut total_ciclos, mut falhas) = (0usize, 0usize, 0usize);
+        let casos = 20;
+        for _ in 0..casos {
+            let mut pos: Vec<[u8; 24]> = (0..n_orb).map(|_| std::array::from_fn(|i| i as u8)).collect();
+            for _ in 0..80 {
+                let m = sorteio() % cn.n_moves;
+                for oi in 0..n_orb {
+                    let cm = &cn.cmove[oi][m];
+                    let antes = pos[oi];
+                    let mut depois = [0u8; 24];
+                    for x in 0..24 {
+                        depois[cm[x] as usize] = antes[x];
+                    }
+                    pos[oi] = depois;
+                }
+            }
+            for oi in 0..n_orb {
+                let aplicar = |p: &mut [u8; 24], seq: &[usize]| {
+                    for &m in seq {
+                        let cm = &cn.cmove[oi][m];
+                        let antes = *p;
+                        let mut depois = [0u8; 24];
+                        for x in 0..24 {
+                            depois[cm[x] as usize] = antes[x];
+                        }
+                        *p = depois;
+                    }
+                };
+                // so as casas da face contam
+                let certas = |p: &[u8; 24]| alvos[oi].iter().filter(|&&q| p[q] == q as u8).count();
+                let mut p = pos[oi];
+                let mut guarda = 0;
+                while certas(&p) < 4 && guarda < 30 {
+                    guarda += 1;
+                    let base = certas(&p);
+                    let mut achou = None;
+                    'busca: for a in 0..24usize {
+                        for b in 0..24usize {
+                            if b == a { continue; }
+                            for c in 0..24usize {
+                                if c == a || c == b { continue; }
+                                for trio in [[a as u8, b as u8, c as u8], [a as u8, c as u8, b as u8]] {
+                                    if let Some(seq) = cn.cycle_triple(oi, trio) {
+                                        let mut q = p;
+                                        aplicar(&mut q, &seq);
+                                        if certas(&q) > base {
+                                            achou = Some((seq, q));
+                                            break 'busca;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    match achou {
+                        Some((seq, q)) => {
+                            total_mov += seq.len();
+                            total_ciclos += 1;
+                            p = q;
+                        }
+                        None => break,
+                    }
+                }
+                if certas(&p) < 4 {
+                    falhas += 1;
+                }
+            }
+        }
+        let orbitas = casos * n_orb;
+        println!("
+{casos} cubos x {n_orb} orbitas = {orbitas} casos");
+        println!("  3-ciclos: {total_ciclos} ({:.1} por orbita)", total_ciclos as f64 / orbitas as f64);
+        println!("  movimentos: {total_mov} ({:.1} por orbita, {:.1} por peca colocada)",
+            total_mov as f64 / orbitas as f64,
+            total_mov as f64 / (orbitas * 4) as f64);
+        println!("  centros da face inteira: ~{:.0} movimentos", 6.0 * total_mov as f64 / orbitas as f64);
+        println!("  orbitas que NAO fecharam: {falhas} de {orbitas}");
+
+        // ---- as ASAS da mesma face ----
+        let n_worb = cn.wing_orbits.len();
+        let alvos_w: Vec<Vec<usize>> = (0..n_worb)
+            .map(|oi| {
+                (0..24)
+                    .filter(|&q| cn.wing_orbits[oi][q][0] / por_face == 0)
+                    .collect()
+            })
+            .collect();
+        println!("
+cada orbita de asa poe {} casas na face (de 24)", alvos_w[0].len());
+        let (mut wm, mut wc, mut wf) = (0usize, 0usize, 0usize);
+        for _ in 0..casos {
+            let mut pos: Vec<[u8; 24]> = (0..n_worb).map(|_| std::array::from_fn(|i| i as u8)).collect();
+            for _ in 0..80 {
+                let m = sorteio() % cn.n_moves;
+                for oi in 0..n_worb {
+                    let wmv = &cn.wmove[oi][m];
+                    let antes = pos[oi];
+                    let mut depois = [0u8; 24];
+                    for x in 0..24 {
+                        depois[wmv[x] as usize] = antes[x];
+                    }
+                    pos[oi] = depois;
+                }
+            }
+            for oi in 0..n_worb {
+                let aplicar = |p: &mut [u8; 24], seq: &[usize]| {
+                    for &m in seq {
+                        let wmv = &cn.wmove[oi][m];
+                        let antes = *p;
+                        let mut depois = [0u8; 24];
+                        for x in 0..24 {
+                            depois[wmv[x] as usize] = antes[x];
+                        }
+                        *p = depois;
+                    }
+                };
+                let alvo = &alvos_w[oi];
+                let certas = |p: &[u8; 24]| alvo.iter().filter(|&&q| p[q] == q as u8).count();
+                let mut p = pos[oi];
+                let mut guarda = 0;
+                while certas(&p) < alvo.len() && guarda < 40 {
+                    guarda += 1;
+                    let base = certas(&p);
+                    let mut achou = None;
+                    'bw: for a in 0..24usize {
+                        for b in 0..24usize {
+                            if b == a { continue; }
+                            for c in 0..24usize {
+                                if c == a || c == b { continue; }
+                                for trio in [[a as u8, b as u8, c as u8], [a as u8, c as u8, b as u8]] {
+                                    if let Some(seq) = cn.wing_cycle_triple(oi, trio) {
+                                        let mut q = p;
+                                        aplicar(&mut q, &seq);
+                                        if certas(&q) > base {
+                                            achou = Some((seq, q));
+                                            break 'bw;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    match achou {
+                        Some((seq, q)) => { wm += seq.len(); wc += 1; p = q; }
+                        None => break,
+                    }
+                }
+                if certas(&p) < alvo.len() { wf += 1; }
+            }
+        }
+        let worb = casos * n_worb;
+        println!("  3-ciclos: {wc} ({:.1} por orbita)", wc as f64 / worb as f64);
+        println!("  movimentos: {wm} ({:.1} por orbita, {:.1} por peca colocada)",
+            wm as f64 / worb as f64, wm as f64 / (worb * alvos_w[0].len()) as f64);
+        println!("  asas da face inteira: ~{:.0} movimentos", 2.0 * wm as f64 / worb as f64);
+        println!("  orbitas que NAO fecharam: {wf} de {worb}");
+    }
+
     /// Anatomia do 3-ciclo: cada ciclo custa |B| + 2|V| (base pura + conjugacao
     /// de ida e volta). Mede |B| por orbita e a distribuicao de |V| sobre todos
     /// os trios alcancaveis — e o mapa para encurtar o ciclo em si.
